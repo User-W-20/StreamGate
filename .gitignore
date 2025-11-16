@@ -1,0 +1,39 @@
+# StreamGate/.gitignore
+
+# === CLion/IDE Specific Files ===
+# CLion 缓存和用户设置目录 (非常重要，必须忽略)
+.idea/
+
+# === CMake Build Artifacts ===
+# 忽略所有 CMake 自动生成的构建目录
+# CLion 默认使用 cmake-build-debug/
+cmake-build-*/
+/build/
+CMakeFiles/
+CMakeCache.txt
+install_manifest.txt
+Makefile
+
+# === Executables and Libraries ===
+# 忽略所有可执行文件
+*.exe
+*.out
+# 忽略你的 Hook 服务器可执行文件
+streamgate_hook_server
+
+# 忽略对象文件、库文件和依赖缓存
+*.o
+*.d
+*.obj
+*.so
+*.a
+*.lib
+
+# === Dependency Source Code ===
+# 忽略 Poco 源码目录和 tar 包（如果它们还留在项目根目录下）
+poco-poco-*/
+poco-*.tar.gz
+
+
+.DS_Store
+Thumbs.db

@@ -1,0 +1,61 @@
+BasedOnStyle: Google
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# 大括号全部使用 Allman 风格
+BreakBeforeBraces: Allman
+
+# 自动换行配置
+ColumnLimit: 120
+
+# 函数声明和定义
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+
+# namespace 配置
+NamespaceIndentation: All
+FixNamespaceComments: true
+
+# switch 缩进
+IndentCaseLabels: true
+BreakBeforeBinaryOperators: All
+
+# include 排序
+SortIncludes: true
+IncludeBlocks: Regroup
+
+# 空格控制
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpacesInAngles: false
+SpaceAfterCStyleCast: true
+SpaceBeforeCpp11BracedList: true
+
+# 指针声明格式
+PointerAlignment: Left   # int* ptr; (推荐风格)
+
+# 换行规则（更适合你这种服务端项目）
+PenaltyReturnTypeOnItsOwnLine: 60
+ReflowComments: true
+
+# 类相关
+AccessModifierOffset: -4
+DerivePointerAlignment: false
+
+# 结构体和枚举
+AlignEscapedNewlines: Left
+
+# 多行参数/调用风格
+AllowAllParametersOfDeclarationOnNextLine: false
+BinPackParameters: false
+BinPackArguments: false
+
+# 捕获列表风格
+SpacesInCStyleCastParentheses: false
+SpaceAfterLogicalNot: true
+
+# 列对齐风格
+AlignTrailingComments: true
