@@ -4,10 +4,22 @@
 #include "HookServer.h"
 #include "Poco/Net/HTTPServerRequest.h"
 #include "Poco/Net/HTTPServerResponse.h"
+#include "Poco/Net/HTTPServerParams.h"
+#include "Poco/Net/ServerSocket.h"
 #include "Poco/Net/SocketAddress.h"
 #include "Poco/StreamCopier.h"
+#include "Poco/Util/ServerApplication.h"
+#include "Poco/Util/Application.h"
+
+#include "ConfigLoader.h"
+#include "DBManager.h"
+#include "AuthManager.h"
+
 #include <iostream>
 #include <string>
+
+using namespace Poco::Net;
+using namespace Poco::Util;
 
 static AuthManager g_authManager;
 
@@ -55,34 +67,67 @@ HTTPRequestHandler* HookRequestHandlerFactory::createRequestHandler(const HTTPSe
 
 void StreamGateServer::initialize(Application& self)
 {
+    ConfigLoader::instance();
+
+    DBManager::instance();
+
     ServerApplication::initialize(self);
+    std::cout << "[Server] All resources (Config, DB Pool) initialized successfully." << std::endl;
 }
 
 int StreamGateServer::main(const std::vector<std::string>& args)
 {
-    Poco::UInt16 port = 8001;
+    Poco::UInt16 port = 0;
+    int maxThreads = 4;
+
+    try
+    {
+        port = ConfigLoader::instance().getInt("HOOK_SERVER_PORT");
+
+        if (ConfigLoader::instance().has("SERVER_MAX_THREADS"))
+        {
+            maxThreads = ConfigLoader::instance().getInt("SERVER_MAX_THREADS");
+        }
+        else
+        {
+            std::cout << "[Config] Using default max threads: " << maxThreads << std::endl;
+        }
+    }
+    catch (const Poco::Exception& e)
+    {
+        std::cerr << "[Server ERROR] Configuration reading failed (e.g., HOOK_SERVER_PORT missing or invalid): " << e.
+            displayText() << std::endl;
+        return Application::EXIT_CONFIG;
+    }
 
     HTTPServerParams::Ptr pParams = new HTTPServerParams;
     pParams->setMaxQueued(100);
-    pParams->setMaxThreads(4);
+    pParams->setMaxThreads(maxThreads);
 
-    ServerSocket svs(SocketAddress("0.0.0.0", port));
-    HTTPServer srv(new HookRequestHandlerFactory, svs, pParams);
-    srv.start();
+    try
+    {
+        ServerSocket svs(SocketAddress("0.0.0.0", port));
+        HTTPServer srv(new HookRequestHandlerFactory, svs, pParams);
+        srv.start();
 
-    std::cout << "------------------------------------------------" << std::endl;
-    std::cout << "StreamGate C++ Hook Server started successfully." << std::endl;
-    std::cout << "Listening on port " << port << "..." << std::endl;
-    std::cout << "------------------------------------------------" << std::endl;
+        std::cout << "------------------------------------------------" << std::endl;
+        std::cout << "StreamGate C++ Hook Server started successfully." << std::endl;
+        std::cout << "Listening on port " << port << "..." << std::endl;
+        std::cout << "------------------------------------------------" << std::endl;
+        waitForTerminationRequest();
 
-    waitForTerminationRequest();
-
-    srv.stop();
-    return Application::EXIT_OK;
+        srv.stop();
+        return Application::EXIT_OK;
+    }
+    catch (const Poco::Exception& e)
+    {
+        std::cerr << "[Server ERROR] Failed to start HTTP Server: " << e.displayText() << std::endl;
+        return Application::EXIT_SOFTWARE;
+    }
 }
 
-int main(int argc,char** argv)
+int main(int argc, char** argv)
 {
     StreamGateServer app;
-    return app.run(argc,argv);
+    return app.run(argc, argv);
 }
