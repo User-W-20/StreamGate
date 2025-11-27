@@ -1,24 +1,20 @@
-# StreamGate/.gitignore
-
 # === CLion/IDE Specific Files ===
-# CLion 缓存和用户设置目录 (非常重要，必须忽略)
+# 忽略 CLion/IntelliJ 缓存和用户设置目录
 .idea/
 
 # === CMake Build Artifacts ===
-# 忽略所有 CMake 自动生成的构建目录
-# CLion 默认使用 cmake-build-debug/
-cmake-build-*/
+# 忽略所有 CMake 自动生成的构建目录 (包括 build/ 和 CLion 默认的 cmake-build-*)
 /build/
+cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
 install_manifest.txt
 Makefile
 
 # === Executables and Libraries ===
-# 忽略所有可执行文件
+# 忽略所有可执行文件 (包括你的 streamgate_hook_server)
 *.exe
 *.out
-# 忽略你的 Hook 服务器可执行文件
 streamgate_hook_server
 
 # 忽略对象文件、库文件和依赖缓存
@@ -29,13 +25,19 @@ streamgate_hook_server
 *.a
 *.lib
 
-# === Dependency Source Code ===
-# 忽略 Poco 源码目录和 tar 包（如果它们还留在项目根目录下）
-poco-poco-*/
-poco-*.tar.gz
+# === Configuration and Sensitive Data (Crucial for Security) ===
+# 忽略包含敏感信息 (密码/密钥/本地IP) 的实际配置文件
+.env
+config.ini
+# 确保所有以 .local 结尾的配置文件也被忽略
+*.local
 
-
+# === OS Specific Files ===
+# 忽略 macOS 和 Windows 的系统文件
 .DS_Store
 Thumbs.db
 
-.env
+# === Dependency Source Code ===
+# 忽略你可能下载的依赖源码包（例如 Poco, Boost 的 tar 包）
+poco-poco-*/
+poco-*.tar.gz

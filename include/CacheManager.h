@@ -1,0 +1,8 @@
+//
+// Created by X on 2025/11/22.
+//
+
+#ifndef STREAMGATE_CACHEMANAGER_H
+#define STREAMGATE_CACHEMANAGER_H
+
+#endif //STREAMGATE_CACHEMANAGER_H
