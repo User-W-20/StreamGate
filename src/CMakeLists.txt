@@ -1,12 +1,37 @@
-find_package(Poco REQUIRED COMPONENTS Net Util JSON Foundation Data DataMySQL)
+find_package(Boost 1.83.0 REQUIRED COMPONENTS system json)
 find_package(PkgConfig REQUIRED)
 
-pkg_check_modules(MARIADB REQUIRED libmariadb)
+# cpp_redis
+pkg_check_modules(CPP_REDIS REQUIRED cpp_redis)
 
+# ============================
+# MariaDB Connector/C++
+# ============================
+find_library(MARIADB_CPP mariadbcpp
+        HINTS /usr/lib /usr/lib/x86_64-linux-gnu
+)
+
+find_library(MARIADB_CLIENT mariadb
+        HINTS /usr/lib /usr/lib/x86_64-linux-gnu
+)
+
+if (NOT MARIADB_CPP)
+    message(FATAL_ERROR "libmariadbcpp not found")
+endif()
+
+if (NOT MARIADB_CLIENT)
+    message(FATAL_ERROR "libmariadb not found")
+endif()
+
+message(STATUS "Found MariaDB C++: ${MARIADB_CPP}")
+message(STATUS "Found MariaDB C client: ${MARIADB_CLIENT}")
 
 set(SOURCES
         main/HookServer.cpp
+        main/main.cpp
+
         auth/AuthManager.cpp
+        cache/CacheManager.cpp
         db/DBManager.cpp
         util/ConfigLoader.cpp
 )
@@ -15,22 +40,20 @@ add_executable(streamgate_hook_server ${SOURCES})
 
 target_include_directories(streamgate_hook_server PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../include
-        ${MARIADB_INCLUDE_DIRS}
+        ${CPP_REDIS_INCLUDE_DIRS}
+        /usr/include/mariadb
 )
-
-target_link_directories(streamgate_hook_server PRIVATE
-        ${MARIADB_LIBRARY_DIRS}
-)
-
 
 target_link_libraries(streamgate_hook_server PRIVATE
-        PocoFoundation
-        PocoNet
-        PocoUtil
-        PocoJSON
+        pthread
+        Boost::system
+        Boost::json
 
-        PocoData
-        PocoDataMySQL
+        # MariaDB C++ Connector
+        ${MARIADB_CPP}
+        ${MARIADB_CLIENT}
 
-        ${MARIADB_LIBRARIES}
+        # redis
+        ${CPP_REDIS_LIBRARIES}
+        tacopie
 )

@@ -4,14 +4,68 @@
 #include "DBManager.h"
 #include "ConfigLoader.h"
 #include <iostream>
-#include "Poco/Data/Statement.h"
-#include "Poco/Exception.h"
-#include "Poco/Data/MySQL/Connector.h"
+#include <stdexcept>
+#include <chrono>
 
-using namespace Poco::Data;
-using namespace Poco::Data::Keywords;
-using Poco::Data::Statement;
-using Poco::Data::MySQL::Connector;
+ThreadPool::ThreadPool(size_t threads) : stop(false)
+{
+    if (threads == 0)
+        throw std::invalid_argument("Thread count must be greater than zero.");
+
+    for (size_t i = 0; i < threads; ++i)
+    {
+        workers.emplace_back(
+            [this]
+            {
+                for (;;)
+                {
+                    std::function<void()> task;
+
+                    {
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+                        this->condition.wait(lock,
+                                             [this]
+                                             {
+                                                 return this->stop || ! this->tasks.empty();
+                                             }
+                            );
+
+                        if (this->stop && this->tasks.empty())
+                        {
+                            return;
+                        }
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                    }
+                    task();
+                }
+            }
+            );
+    }
+}
+
+ThreadPool::~ThreadPool()
+{
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        stop = true;
+    }
+
+    condition.notify_all();
+    for (std::thread& worker : workers)
+    {
+        if (worker.joinable())
+        {
+            worker.join();
+        }
+    }
+}
+
+DBManager::DBManager() : _dirver(sql::mariadb::get_driver_instance()),
+                         _threadPool(
+                             std::make_unique<ThreadPool>(ConfigLoader::instance().getInt("SERVER_MAX_THREADS", 4)))
+{
+}
 
 DBManager& DBManager::instance()
 {
@@ -19,81 +73,114 @@ DBManager& DBManager::instance()
     return instance;
 }
 
-DBManager::DBManager()
+std::unique_ptr<sql::Connection> DBManager::getConnection()
 {
-    MySQL::Connector::registerConnector();
+    std::unique_lock<std::mutex> lock(_connectionMutex);
+    if (_connectionPool.empty())
+    {
+        throw std::runtime_error("DBManager: Connection pool exhausted.");
+    }
 
-    _connectionString = ConfigLoader::instance().getDBConnectionString();
+    std::unique_ptr<sql::Connection> conn = std::move(_connectionPool.front());
+    _connectionPool.pop();
 
-    int minConn = 4;
-    int maxConn = 16;
+    return conn;
+}
+
+void DBManager::releaseConnection(std::unique_ptr<sql::Connection> conn)
+{
+    if (conn)
+    {
+        std::unique_lock<std::mutex> lock(_connectionMutex);
+        _connectionPool.push(std::move(conn));
+    }
+}
+
+void DBManager::connect()
+{
+    std::cout << "DBManager: Initializing MariaDB connection pool..." << std::endl;
 
     try
     {
-        _pPool = std::make_unique<SessionPool>(MySQL::Connector::KEY,
-                                               _connectionString,
-                                               minConn,
-                                               maxConn);
-        std::cout << "[DBManager] MySQL SessionPool initialized successfully. Conn String: [" << _connectionString <<
-            "]" << std::endl;
+        const std::string host = ConfigLoader::instance().getString("DB_HOST");
+        const int port = ConfigLoader::instance().getInt("DB_PORT");
+        const std::string user = ConfigLoader::instance().getString("DB_USER");
+        const std::string pass = ConfigLoader::instance().getString("DB_PASS");
+        const std::string name = ConfigLoader::instance().getString("DB_NAME");
+
+        const std::string url = "jdbc:mariadb://" + host + ":" + std::to_string(port);
+        constexpr size_t initial_pool_size = 5;
+
+        for (size_t i = 0; i < initial_pool_size; ++i)
+        {
+            std::unique_ptr<sql::Connection> conn(_dirver->connect(url, user, pass));
+            conn->setSchema(name);
+
+            std::unique_lock<std::mutex> lock(_connectionMutex);
+            _connectionPool.push(std::move(conn));
+        }
+
+        std::cout << "DBManager: MariaDB connection pool initialized. (Host: " << host << ", Pool Size: " <<
+            initial_pool_size << ")" << std::endl;
     }
-    catch (const Poco::Exception& e)
+    catch (const sql::SQLException& e)
     {
-        std::cerr << "[DBManager ERROR] Failed to initialize SessionPool: " << e.displayText() << std::endl;
+        std::cerr << "DBManager FATAL SQL ERROR during connection: " << e.what() << std::endl;
+        throw;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "DBManager FATAL ERROR: " << e.what() << std::endl;
         throw;
     }
 }
 
-bool DBManager::checkPublishAuth(const std::string& streamName, const std::string& clientId)
+int DBManager::performSyncCheck(const std::string& streamName, const std::string& clientId)
 {
+    int result=1;
+    std::unique_ptr<sql::Connection>conn;
+
     try
     {
-        Session session = _pPool->get();
+        conn=getConnection();
 
-        int isActive = 0;
-        std::size_t count = 0;
+        std::unique_ptr<sql::PreparedStatement>pstmt(conn->prepareStatement("SELECT COUNT(id) FROM streams WHERE name=? AND client_id=? AND status=1"));
 
-        std::string sql = "SELECT is_active FROM stream_auth WHERE stream_key = ? AND auth_token = ?";
+        pstmt->setString(1,streamName);
+        pstmt->setString(2,clientId);
 
-        const char* streamCStr = streamName.c_str();
-        const char* clientCStr = clientId.c_str();
+        std::unique_ptr<sql::ResultSet>res(pstmt->executeQuery());
 
-        Statement select(session);
-
-        select << sql,
-            into(isActive),
-            use(streamCStr),
-            use(clientCStr),
-            limit(1);
-
-        count = select.execute();
-
-        if (count == 0)
+        if (res->next())
         {
-            std::cout << "[DB] Auth FAILED: No record found for Stream=" << streamName << std::endl;
-            return false;
+            int count=res->getInt(1);
+            if (count>0)
+            {
+                result=0;
+            }
         }
-
-        if (isActive == 1)
-        {
-            std::cout << "[DB] Auth SUCCESS: Stream is active and token matches." << std::endl;
-            return true;
-        }
-        else
-        {
-            std::cout << "[DB] Auth FAILED: Record found but is_active=0." << std::endl;
-            return false;
-        }
-    }
-    catch (const Poco::Data::DataException& e)
+        std::cout << "DBManager: Sync check for stream "<<streamName<<" completed. Result: " <<(result==0?"Success":"Failed")<<std::endl;
+    }catch (const sql::SQLException&e)
     {
-        std::cerr << "[DBManager ERROR] Data query failed (SQL/DB Issue): " << e.displayText() << std::endl;
-        return false;
-    }
-    catch (const Poco::Exception& e)
+        std::cerr<<"DBManager SQL Query Error: " <<e.what()<<" (Stream: " <<streamName<<")" << std::endl;
+        result=-1;
+    }catch (const std::exception&e)
     {
-        std::cerr << "[DBManager ERROR] Database operation failed: " << e.displayText() << std::endl;
-        return false;
+        std::cerr << "DBManager General Error: " << e.what() << std::endl;
+        result=-2;
     }
-    return false;
+
+    releaseConnection(std::move(conn));
+    return result;
 }
+
+std::future<int> DBManager::asyncCheckStream(const std::string& streamName, const std::string& clientId)
+{
+    return _threadPool->submit(
+        &DBManager::performSyncCheck,
+        this,
+        streamName,
+        clientId
+        );
+}
+

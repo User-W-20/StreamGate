@@ -3,88 +3,151 @@
 //
 #include "AuthManager.h"
 #include "DBManager.h"
-#include "Poco/JSON/Parser.h"
-#include "Poco/Dynamic/Var.h"
-#include "Poco/Exception.h"
+#include "CacheManager.h"
 #include <iostream>
-#include <sstream>
+#include <stdexcept>
+#include <thread>
 
-using namespace Poco;
-
-AuthManager::AuthManager()
+namespace AuthError
 {
-    std::cout << "[AuthManager] Initializing database and Redis connections..." << std::endl;
+    constexpr int SUCCESS = 0;
+    constexpr int JSON_PARSE_FAIL = 300;
+    constexpr int CACHE_AUTH_FAIL = 100;
+    constexpr int DB_AUTH_FAIL = 200;
+    constexpr int DB_ERROR = 201;
+    constexpr int CACHE_ERROR = 101;
+}
+
+AuthManager::AuthManager() = default;
+
+
+AuthManager& AuthManager::instance()
+{
+    static AuthManager instance;
+    return instance;
 }
 
 bool AuthManager::parseBody(const std::string& body, std::string& streamName, std::string& clientId)
 {
+    if (body.empty())
+    {
+        std::cerr << "AuthManager: Request body is empty." << std::endl;
+        return false;
+    }
+
     try
     {
-        Poco::JSON::Parser parser;
-        Dynamic::Var result = parser.parse(body);
-        Poco::JSON::Object::Ptr root = result.extract<Poco::JSON::Object::Ptr>();
+        //解析JSON
+        boost::json::value jv = boost::json::parse(body);
+        boost::json::object const& obj = jv.as_object();
 
-        std::string action = root->get("action").toString();
-        if (action != "on_publish")
+        //提取字段
+        if (obj.contains("stream_name") && obj.at("stream_name").is_string())
         {
-            std::cerr << "[AuthManager ERROR] Received non-publish action: " << action << std::endl;
+            streamName = boost::json::value_to<std::string>(obj.at("stream_name"));
+        }
+        else
+        {
+            std::cerr << "AuthManager: Missing or invalid 'stream_name' in JSON." << std::endl;
             return false;
         }
-        std::string app = root->get("app").toString();
-        std::string stream = root->get("stream").toString();
 
-        streamName = app + "/" + stream;
-
-        clientId = root->get("client_id").toString();
-
-        std::cout << "[AuthManager] Hook Parsed - Stream: " << streamName << ", ClientID: " << clientId << std::endl;
+        if (obj.contains("client_id") && obj.at("client_id").is_string())
+        {
+            clientId = boost::json::value_to<std::string>(obj.at("client_id"));
+        }
+        else
+        {
+            std::cerr << "AuthManager: Missing or invalid 'client_id' in JSON." << std::endl;
+            return false;
+        }
 
         return true;
     }
-    catch (const Poco::Exception& e)
+    catch (const boost::json::system_error& e)
     {
-        std::cerr << "[AuthManager ERROR] JSON parsing failed: " << e.displayText() << std::endl;
+        std::cerr << "AuthManager: JSON parse error: " << e.what() << std::endl;
+        return false;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "AuthManager: Unexpected error during JSON parsing: " << e.what() << std::endl;
         return false;
     }
 }
 
-int AuthManager::performDbCheck(const std::string& streamName, const std::string& clientId)
+int AuthManager::performCheck(const std::string& streamName, const std::string& clientId)
 {
-    bool is_auth_ok = DBManager::instance().checkPublishAuth(streamName, clientId);
+    std::future<int> cacheGetFuture = CacheManager::instance().getAuthResult(streamName, clientId);
 
-    if (is_auth_ok)
+    int cacheResult = AuthError::CACHE_ERROR;
+    try
     {
-        return 0;
+        if (cacheGetFuture.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready)
+        {
+            cacheResult = cacheGetFuture.get();
+        }
+        else
+        {
+            std::cerr << "AuthManager: Cache lookup timeout for " << streamName << std::endl;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "AuthManager: Cache future exception: " << e.what() << std::endl;
+    }
+    if (cacheResult == CACHE_HIT_SUCCESS)
+    {
+        std::cout << "AuthManager: Cache HIT (Success) for " << streamName << std::endl;
+        return AuthError::SUCCESS;
+    }
+
+    if (cacheResult == CACHE_HIT_FAILURE)
+    {
+        std::cout << "AuthManager: Cache HIT (Failure) for " << streamName << std::endl;
+        return AuthError::CACHE_AUTH_FAIL;
+    }
+
+    std::future<int> dbFuture = DBManager::instance().asyncCheckStream(streamName, clientId);
+
+    int dbResult = AuthError::DB_ERROR;
+    try
+    {
+        dbResult = dbFuture.get();
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "AuthManager: DB future exception: " << e.what() << std::endl;
+    }
+
+    int finalAuthResult;
+
+    if (dbResult == 0)
+    {
+        finalAuthResult = AuthError::SUCCESS;
+        CacheManager::instance().setAuthResult(streamName, clientId, AuthError::SUCCESS);
+    }
+    else if (dbResult > 0)
+    {
+        finalAuthResult = AuthError::DB_AUTH_FAIL;
+        CacheManager::instance().setAuthResult(streamName, clientId, AuthError::DB_AUTH_FAIL);
     }
     else
     {
-        return 1;
+        finalAuthResult = AuthError::DB_ERROR;
     }
-}
 
+    return finalAuthResult;
+}
 
 int AuthManager::checkHook(const std::string& body)
 {
-    std::string streamName;
-    std::string clientId;
-    int result = 0;
+    std::string streamName, clientId;
 
     if (! parseBody(body, streamName, clientId))
     {
-        std::cout << "[AuthManager] DENIED (Invalid Hook Body/Action)." << std::endl;
-        return 2;
+        return AuthError::JSON_PARSE_FAIL;
     }
 
-    result = performDbCheck(streamName, clientId);
-
-    if (result == 0)
-    {
-        std::cout << "[AuthManager] ALLOWED." << std::endl;
-    }
-    else
-    {
-        std::cout << "[AuthManager] DENIED (DB Check Failed, Code: " << result << ")." << std::endl;
-    }
-
-    return result;
+    return performCheck(streamName, clientId);
 }

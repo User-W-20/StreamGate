@@ -4,49 +4,82 @@
 
 #ifndef STREAMGATE_HOOKSERVER_CPP_H
 #define STREAMGATE_HOOKSERVER_CPP_H
-#include "Poco/Net/HTTPServer.h"
-#include "Poco/Net/HTTPRequestHandler.h"
-#include "Poco/Net/HTTPRequestHandlerFactory.h"
-#include "Poco/Util/ServerApplication.h"
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/version.hpp>
+#include <vector>
+#include <string>
+
 #include "AuthManager.h"
-#include "HookServer.h"
+#include "CacheManager.h"
+#include "DBManager.h"
+#include "ConfigLoader.h"
 
-namespace Poco
-{
-    namespace Net
-    {
-        class HTTPServerRequest;
-        class HTTPServerResponse;
-    }
-
-    namespace Util
-    {
-        class Application;
-    }
-}
-
-using namespace Poco::Net;
-using namespace Poco::Util;
+namespace net = boost::asio;
+namespace beast = boost::beast;
+namespace http = beast::http;
+using tcp = net::ip::tcp;
 
 //请求处理类
-class HookRequestHandler : public HTTPRequestHandler
+class HookSession : public std::enable_shared_from_this<HookSession>
 {
 public:
-    virtual void handleRequest(HTTPServerRequest& request, HTTPServerResponse& response) override;
+    explicit HookSession(tcp::socket socket);
+
+    void start();
+
+private:
+    //异步读取
+    void do_read();
+
+    void on_read(beast::error_code ec, std::size_t bytes_transferred);
+
+    //处理请求，生成响应
+    void handle_request();
+
+    //异步写
+    void do_write(http::message_generator&& msg);
+
+    void on_write(bool keep_alive,beast::error_code ec, std::size_t bytes_transferred);
+    tcp::socket socket_;
+    net::strand<net::any_io_executor> strand_;
+
+    beast::flat_buffer buffer_;                //存储异步读取数据
+    http::request<http::string_body> request_; //存储解析后的http请求
 };
 
-//请求工厂类
-class HookRequestHandlerFactory : public HTTPRequestHandlerFactory
+//服务器监听类
+class StreamGateListener : public std::enable_shared_from_this<StreamGateListener>
 {
-    virtual HTTPRequestHandler* createRequestHandler(const HTTPServerRequest& request) override;
+public:
+    StreamGateListener(
+        net::io_context& ioc,
+        const tcp::endpoint& endpoint
+        );
+
+    void run();
+
+private:
+    void do_accept();
+
+    net::io_context& ioc_;
+    tcp::acceptor acceptor_;
 };
 
-//服务器应用类
-class StreamGateServer : public ServerApplication
+//服务器应用入口类
+class StreamGateServer
 {
-protected:
-    void initialize(Application& self) override;
+public:
+    void run();
 
-    int main(const std::vector<std::string>& args) override;
+private:
+    void initialize();
+
+    void start_service();
+
+    net::io_context ioc_;
 };
 #endif //STREAMGATE_HOOKSERVER_CPP_H

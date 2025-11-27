@@ -5,19 +5,27 @@
 #ifndef STREAMGATE_AUTHMANAGER_H
 #define STREAMGATE_AUTHMANAGER_H
 #include <string>
-#include "Poco/JSON/Object.h"
+#include <future>
+#include <stdexcept>
+#include "boost/json.hpp"
 
 class AuthManager
 {
 public:
-    AuthManager();
+    static AuthManager& instance();
 
-    int checkHook(const std::string& body);
+    static int checkHook(const std::string& body);
+
+    AuthManager(const AuthManager&) = delete;
+    AuthManager& operator=(const AuthManager&) = delete;
 
 private:
-    bool parseBody(const std::string& body, std::string& streamName, std::string& clientId);
+    AuthManager();
+    ~AuthManager() = default;
 
-    int performDbCheck(const std::string& streamName, const std::string& clientId);
+   static bool parseBody(const std::string& body, std::string& streamName, std::string& clientId);
+
+   static int performCheck(const std::string& streamName, const std::string& clientId);
 };
 
 #endif //STREAMGATE_AUTHMANAGER_H

@@ -4,34 +4,36 @@
 
 #ifndef STREAMGATE_CONFIGLOADER_H
 #define STREAMGATE_CONFIGLOADER_H
-#include "Poco/Util/AbstractConfiguration.h"
+
 #include <string>
-#include "Poco/AutoPtr.h"
-#include "Poco/Data/SessionPool.h"
+#include <map>
+#include <stdexcept>
+#include <algorithm>
 
 class ConfigLoader
 {
 public:
     static ConfigLoader& instance();
 
+    void load(const std::string& filename);
+
     [[nodiscard]] std::string getString(const std::string& key) const;
 
     [[nodiscard]] int getInt(const std::string& key) const;
 
-    [[nodiscard]] std::string getDBConnectionString() const;
+    [[nodiscard]] int getInt(const std::string& key, int defaultValue) const;
+
+    [[nodiscard]] bool has(const std::string& key) const;
 
     ConfigLoader(const ConfigLoader&) = delete;
     ConfigLoader& operator=(const ConfigLoader&) = delete;
-
-    [[nodiscard]] bool has(const std::string& key) const;
 
 private:
     ConfigLoader();
     ~ConfigLoader() = default;
 
-private:
-   Poco::AutoPtr<Poco::Util::AbstractConfiguration> _pConfig;
+    std::map<std::string, std::string> _configMap;
 
-    const std::string CONFIG_FILE = ".env";
+    void parseFile(const std::string& filename);
 };
 #endif //STREAMGATE_CONFIGLOADER_H

@@ -2,13 +2,24 @@
 // Created by X on 2025/11/18.
 //
 #include "ConfigLoader.h"
-#include "Poco/Util/AbstractConfiguration.h"
-#include "Poco/Exception.h"
-#include "Poco/Util/PropertyFileConfiguration.h"
-#include "Poco/Format.h"
-#include <iostream>
 
-using namespace Poco::Util;
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include <stdexcept>
+
+static std::string trim(const std::string& str)
+{
+    size_t first = str.find_first_not_of(" \t\n\r");
+    if (std::string::npos == first)
+    {
+        return "";
+    }
+
+    size_t last = str.find_last_not_of(" \t\n\r");
+
+    return str.substr(first, (last - first + 1));
+}
 
 ConfigLoader& ConfigLoader::instance()
 {
@@ -16,53 +27,89 @@ ConfigLoader& ConfigLoader::instance()
     return instance;
 }
 
-ConfigLoader::ConfigLoader()
-{
-    try
-    {
-        _pConfig = new PropertyFileConfiguration(CONFIG_FILE);
+ConfigLoader::ConfigLoader() = default;
 
-        std::cout << "[ConfigLoader] Configuration loaded successfully from " << CONFIG_FILE << std::endl;
-    }
-    catch (const Poco::FileNotFoundException& e)
+void ConfigLoader::parseFile(const std::string& filename)
+{
+    std::ifstream file(filename);
+    if (! file.is_open())
     {
-        std::cerr << "[ConfigLoader ERROR] Configuration file '" << CONFIG_FILE << "' not found." << std::endl;
-        std::cerr << "Please ensure a local .env file exists and contains all required keys." << std::endl;
+        throw std::runtime_error("ConfigLoader: Could not open configuration file: " + filename);
     }
-    catch (const Poco::Exception& e)
+
+    std::string line;
+    while (std::getline(file, line))
     {
-        std::cerr << "[ConfigLoader ERROR] Failed to load configuration: " << e.displayText() << std::endl;
-        throw;
+        line = trim(line);
+        if (line.empty() || line[0] == '#')
+        {
+            continue;
+        }
+
+        size_t delimiterPos = line.find('=');
+        if (delimiterPos != std::string::npos)
+        {
+            std::string key = trim(line.substr(0, delimiterPos));
+            std::string value = trim(line.substr(delimiterPos + 1));
+
+            if (value.size() >= 2 &&
+                (value.front() == '"' && value.back() == '"') ||
+                (value.front() == '\'' && value.back() == '\''))
+            {
+                value = value.substr(1, value.size() - 2);
+            }
+
+            if (! key.empty())
+            {
+                _configMap[key] = value;
+            }
+        }
     }
 }
 
-std::string ConfigLoader::getString(const std::string& key) const
+void ConfigLoader::load(const std::string& filename)
 {
-    return _pConfig->getString(key);
-}
-
-int ConfigLoader::getInt(const std::string& key) const
-{
-    return _pConfig->getInt(key);
-}
-
-std::string ConfigLoader::getDBConnectionString() const
-{
-    std::string port_str = std::to_string(getInt("DB_PORT"));
-
-    std::string connStr = Poco::format(
-        "host=%s;user=%s;password=%s;db=%s;port=%s",
-        getString("DB_HOST"),
-        getString("DB_USER"),
-        getString("DB_PASS"),
-        getString("DB_NAME"),
-        port_str
-        );
-
-    return connStr;
+    _configMap.clear();
+    parseFile(filename);
+    std::cout << "ConfigLoader: Configuration loaded from " << filename << std::endl;
 }
 
 bool ConfigLoader::has(const std::string& key) const
 {
-    return _pConfig->has(key);
+    return _configMap.count(key) > 0;
+}
+
+std::string ConfigLoader::getString(const std::string& key) const
+{
+    if (! has(key))
+    {
+        throw std::out_of_range("ConfigLoader: Missing configuration key: " + key);
+    }
+
+    return _configMap.at(key);
+}
+
+int ConfigLoader::getInt(const std::string& key) const
+{
+    return std::stoi(getString(key));
+}
+
+int ConfigLoader::getInt(const std::string& key, int defaultValue) const
+{
+    if (! has(key))
+    {
+        return defaultValue;
+    }
+
+    try
+    {
+        return std::stoi(getString(key));
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "ConfigLoader Warning: Key '" << key
+            << "' is not a valid integer: " << e.what()
+            << ". Using default value." << std::endl;
+        return defaultValue;
+    }
 }
