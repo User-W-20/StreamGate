@@ -16,6 +16,8 @@ public:
 
     static int checkHook(const std::string& body);
 
+    bool authenticate(const std::string&streamKey,const std::string &clientId);
+
     AuthManager(const AuthManager&) = delete;
     AuthManager& operator=(const AuthManager&) = delete;
 

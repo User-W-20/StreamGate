@@ -151,3 +151,8 @@ int AuthManager::checkHook(const std::string& body)
 
     return performCheck(streamName, clientId);
 }
+
+bool AuthManager::authenticate(const std::string& streamKey, const std::string& clientId)
+{
+    return true;
+}

@@ -2,8 +2,10 @@
 // Created by X on 2025/11/16.
 //
 #include "HookServer.h"
+#include "AuthManager.h"
 #include <iostream>
 #include <thread>
+#include <boost/json.hpp>
 #include <boost/lexical_cast.hpp>
 
 #include <iostream>
@@ -54,17 +56,53 @@ void HookSession::handle_request()
     using response_type = http::response<http::string_body>;
     response_type res;
 
+    res.set(http::field::server, "StreamGate-Beast");
+    res.set(http::field::content_type, "application/json");
+
     if (request_.method() == http::verb::post && request_.target() == "/hook")
     {
-        res.result(http::status::ok);
-        res.set(http::field::server, "StreamGate-Beast");
-        res.set(http::field::content_type, "application/json");
-        res.body() = R"({"code":0,"msg":"success"})";
+        try
+        {
+            boost::json::value jv = boost::json::parse(request_.body());
+
+            std::string streamKey = jv.at("streamKey").as_string().c_str();
+            std::string clientId = jv.at("clientId").as_string().c_str();
+
+            bool is_authenticated = AuthManager::instance().authenticate(streamKey, clientId);
+
+            if (is_authenticated)
+            {
+                res.result(http::status::ok);
+                res.body() = R"({"code":0,"msg":"success"})";
+            }
+            else
+            {
+                res.result(http::status::forbidden);
+                res.body() = R"({"code":1,"msg":"authentication failed"})";
+            }
+        }
+        catch (const boost::json::system_error& e)
+        {
+            std::cerr << "JSON Parsing Error (400): " << e.code().message() << std::endl;
+            res.result(http::status::bad_request);
+            res.body()=R"({"code":2,"msg":"invalid json format or syntax error"})";
+        }
+        catch (const std::out_of_range& e)
+        {
+            std::cerr << "JSON Key Missing Error (400): " << e.what() << std::endl;
+            res.result(http::status::bad_request);
+            res.body() = R"({"code":3,"msg":"missing required key"})";
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "Internal Server Error (500) during auth: " << e.what() << std::endl;
+            res.result(http::status::internal_server_error);
+            res.body() = R"({"code":4,"msg":"internal server error"})";
+        }
     }
     else
     {
         res.result(http::status::not_found);
-        res.set(http::field::server, "StreamGate-Beast");
         res.body() = "The requested resource was not found.";
     }
 
