@@ -15,7 +15,9 @@ int main(int argc, char* argv[])
 
         ConfigLoader::instance().load(".env");
 
-        CacheManager::instance().connect();
+        CacheManager::instance().start_io_loop();
+
+        DBManager::instance().connect();
 
         StreamGateServer server;
 

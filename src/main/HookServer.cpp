@@ -67,8 +67,9 @@ void HookSession::handle_request()
 
             std::string streamKey = jv.at("streamKey").as_string().c_str();
             std::string clientId = jv.at("clientId").as_string().c_str();
+            std::string authToken = jv.at("authToken").as_string().c_str();
 
-            bool is_authenticated = AuthManager::instance().authenticate(streamKey, clientId);
+            bool is_authenticated = AuthManager::instance().authenticate(streamKey, clientId, authToken);
 
             if (is_authenticated)
             {
@@ -85,7 +86,7 @@ void HookSession::handle_request()
         {
             std::cerr << "JSON Parsing Error (400): " << e.code().message() << std::endl;
             res.result(http::status::bad_request);
-            res.body()=R"({"code":2,"msg":"invalid json format or syntax error"})";
+            res.body() = R"({"code":2,"msg":"invalid json format or syntax error"})";
         }
         catch (const std::out_of_range& e)
         {

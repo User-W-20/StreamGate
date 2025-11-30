@@ -9,6 +9,12 @@
 namespace net = boost::asio;
 using namespace std::chrono;
 
+CacheManager& CacheManager::instance()
+{
+    static CacheManager instance;
+    return instance;
+}
+
 CacheManager::CacheManager()
 {
     _client = std::make_unique<cpp_redis::client>();
@@ -16,25 +22,48 @@ CacheManager::CacheManager()
 
 CacheManager::~CacheManager()
 {
-    if (_client)
+    try
     {
-        _client->disconnect(true);
+        if (_client)
+            _client->disconnect();
+
+        _io_context.stop();
+        _work_guard.reset();
+
+        for (auto& t : _io_threads)
+        {
+            if (t.joinable())
+            {
+                t.join();
+            }
+        }
+    }
+    catch (...)
+    {
     }
 }
 
-CacheManager& CacheManager::instance()
+void CacheManager::start_io_loop()
 {
-    static CacheManager instance;
-    return instance;
-}
+    _work_guard = std::make_unique<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(
+        boost::asio::make_work_guard(_io_context));
 
-std::string CacheManager::buildKey(const std::string& streamKey, const std::string& clientId)
-{
-    return "auth:" + streamKey + ":" + clientId;
-}
+    const size_t thread_count = 2;
+    for (size_t i = 0; i < thread_count; ++i)
+    {
+        _io_threads.emplace_back([this]()
+        {
+            try
+            {
+                _io_context.run();
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << "CacheManager I/O thread crashed: " << e.what() << std::endl;
+            }
+        });
+    }
 
-void CacheManager::connect()
-{
     std::cout << "CacheManager: Initializing cpp_redis client (self-managed I/O)..." << std::endl;
 
     try
@@ -45,83 +74,114 @@ void CacheManager::connect()
 
         _client->connect(host,
                          port,
-                         [](const std::string& host, size_t port, cpp_redis::client::connect_state status)
+                         [this](const std::string& host, size_t port, cpp_redis::client::connect_state status)
                          {
-                             if (status == cpp_redis::client::connect_state::ok)
+                             if (status == cpp_redis::client::connect_state::dropped)
                              {
-                                 std::cout << "CacheManager: Successfully connected to Redis at " << host << ":" << port
-                                     << std::endl;
-                             }
-                             else
-                             {
-                                 std::cerr << "CacheManager: Failed to connect to Redis at " << host << ":" << port <<
-                                     std::endl;
+                                 std::cerr << "Redis connection dropped. Reconnecting...\n";
+
+                                 try
+                                 {
+                                     _client->connect(host, port, nullptr);
+                                 }
+                                 catch (...)
+                                 {
+                                 }
                              }
                          });
+
+        _client->sync_commit(std::chrono::milliseconds(50));
+        std::cout << "CacheManager: Redis connection initiated. I/O loop running on " << thread_count << " threads." <<
+            std::endl;
     }
     catch (const std::exception& e)
     {
-        std::cerr << "CacheManager FATAL ERROR: " << e.what() << std::endl;
-        throw;
+        std::cerr << "CacheManager Warning: Configuration or initial setup failed (Proceeding without Redis): " << e.
+            what() << std::endl;
     }
+}
+
+std::string CacheManager::buildKey(const std::string& streamKey, const std::string& clientId)
+{
+    return "auth:" + streamKey + ":" + clientId;
 }
 
 int CacheManager::performSyncGet(const std::string& key)
 {
-    std::promise<int> result_promise;
-    std::future<int> result_future = result_promise.get_future();
-
-    _client->get(key,
-                 [&result_promise](const cpp_redis::reply& reply)
-                 {
-                     try
-                     {
-                         if (reply.is_error())
-                         {
-                             std::cerr << "Redis GET Error: " << reply.as_string() << std::endl;
-                             result_promise.set_value(CACHE_ERROR);
-                         }
-                         else if (reply.is_null())
-                         {
-                             result_promise.set_value(CACHE_MISS);
-                         }
-                         else
-                         {
-                             int result = boost::lexical_cast<int>(reply.as_string());
-                             result_promise.set_value(result == 0 ? CACHE_HIT_SUCCESS : CACHE_HIT_FAILURE);
-                         }
-                     }
-                     catch (const std::exception& e)
-                     {
-                         std::cerr << "Redis GET Cast Error: " << e.what() << std::endl;
-                         result_promise.set_value(CACHE_ERROR);
-                     }
-                 });
-
-    _client->commit();
-
-    if (result_future.wait_for(seconds(1)) == std::future_status::timeout)
+    try
     {
-        std::cerr << "Redis GET Timeout for key: " << key << std::endl;
+        if (! _client->is_connected())
+        {
+            std::cerr << "Redis GET Error: not connected\n";
+            return CACHE_ERROR;
+        }
+
+        auto future_reply = _client->get(key);
+
+        _client->sync_commit(std::chrono::milliseconds(50));
+
+        auto reply = future_reply.get();
+
+        if (reply.is_null())
+            return CACHE_MISS;
+
+        if (! reply.is_string())
+            return CACHE_ERROR;
+
+        std::string v = reply.as_string();
+
+        if (v == "1")
+            return CACHE_HIT_SUCCESS;
+        if (v == "0")
+            return CACHE_HIT_FAILURE;
+
+        return CACHE_MISS;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Redis GET Exception: " << e.what() << "\n";
         return CACHE_ERROR;
     }
-
-    return result_future.get();
+    catch (...)
+    {
+        return CACHE_ERROR;
+    }
 }
+
 
 void CacheManager::performSyncSet(const std::string& key, int result)
 {
-    _client->setex(key,
-                   _cacheTTL,
-                   std::to_string(result),
-                   [](const cpp_redis::reply& reply)
-                   {
-                       if (reply.is_error())
+    try
+    {
+        if (! _client->is_connected())
+        {
+            std::cerr << "Redis SET Error: client disconnected\n";
+            return;
+        }
+
+        std::string value = (result == CACHE_HIT_SUCCESS) ? "1" : "0";
+
+        _client->setex(key,
+                       _cacheTTL,
+                       value,
+                       [](const cpp_redis::reply& reply)
                        {
-                           std::cerr << "Redis SETEX Error: " << reply.as_string() << std::endl;
-                       }
-                   });
-    _client->commit();
+                           if (reply.is_error())
+                           {
+                               std::cerr << "Redis SETEX Error: " << reply.as_string() << std::endl;
+                           }
+                       });
+
+        _client->sync_commit(std::chrono::milliseconds(200));
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Redis I/O Error during SET for key " << key << ": " << e.what() << std::endl;
+    }
+    catch (...)
+    {
+        std::cerr << "CacheManager Unknown Error during SET for key " << key << "." << std::endl;
+    }
 }
 
 std::future<int> CacheManager::getAuthResult(const std::string& streamKey, const std::string& clientId)
@@ -142,5 +202,22 @@ std::future<void> CacheManager::setAuthResult(const std::string& streamKey, cons
         &CacheManager::performSyncSet,
         this,
         key,
+        result);
+}
+
+std::future<int> CacheManager::getAuthResult(const std::string& cacheKey)
+{
+    return DBManager::instance().getThreadPool().submit(
+        &CacheManager::performSyncGet,
+        this,
+        cacheKey);
+}
+
+void CacheManager::setAuthResult(const std::string& cacheKey, int result)
+{
+    DBManager::instance().getThreadPool().submit(
+        &CacheManager::performSyncSet,
+        this,
+        cacheKey,
         result);
 }

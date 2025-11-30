@@ -76,29 +76,66 @@ DBManager& DBManager::instance()
 std::unique_ptr<sql::Connection> DBManager::getConnection()
 {
     std::unique_lock<std::mutex> lock(_connectionMutex);
-    if (_connectionPool.empty())
+
+    while (! _connectionPool.empty())
     {
-        throw std::runtime_error("DBManager: Connection pool exhausted.");
+        std::unique_ptr<sql::Connection> conn = std::move(_connectionPool.front());
+        _connectionPool.pop();
+
+        try
+        {
+            // 活性检查：尝试执行一个简单的查询
+            std::unique_ptr<sql::Statement> stmt(conn->createStatement());
+            stmt->execute("SELECT 1");
+
+            // 检查成功，返回连接
+            return conn;
+        }
+        catch (const sql::SQLException& e)
+        {
+            // 捕获 SQL 异常，说明连接失效。丢弃它，继续检查下一个。
+            std::cerr << "DBManager getConnection SQL Error (Stale): " << e.what() << ". Dropping connection." <<
+                std::endl;
+            continue;
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "DBManager getConnection General Error: " << e.what() << ". Dropping connection." << std::endl;
+            continue;
+        }
+        catch (...)
+        {
+            std::cerr << "DBManager getConnection Unknown Error. Dropping connection." << std::endl;
+            continue;
+        }
     }
 
-    std::unique_ptr<sql::Connection> conn = std::move(_connectionPool.front());
-    _connectionPool.pop();
-
-    return conn;
+    return nullptr; // 连接池耗尽
 }
 
 void DBManager::releaseConnection(std::unique_ptr<sql::Connection> conn)
 {
-    if (conn)
+    if (! conn)
+        return;
+
+    try
     {
-        std::unique_lock<std::mutex> lock(_connectionMutex);
-        _connectionPool.push(std::move(conn));
+        std::unique_ptr<sql::Statement> stmt(conn->createStatement());
+        stmt->execute("SELECT 1");
     }
+    catch (...)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(_connectionMutex);
+    _connectionPool.push(std::move(conn));
 }
 
 void DBManager::connect()
 {
     std::cout << "DBManager: Initializing MariaDB connection pool..." << std::endl;
+    std::vector<std::unique_ptr<sql::Connection>> temp_pool;
 
     try
     {
@@ -115,9 +152,15 @@ void DBManager::connect()
         {
             std::unique_ptr<sql::Connection> conn(_dirver->connect(url, user, pass));
             conn->setSchema(name);
+            temp_pool.push_back(std::move(conn));
+        }
 
+        {
             std::unique_lock<std::mutex> lock(_connectionMutex);
-            _connectionPool.push(std::move(conn));
+            for (auto& conn_ptr : temp_pool)
+            {
+                _connectionPool.push(std::move(conn_ptr));
+            }
         }
 
         std::cout << "DBManager: MariaDB connection pool initialized. (Host: " << host << ", Pool Size: " <<
@@ -135,52 +178,70 @@ void DBManager::connect()
     }
 }
 
-int DBManager::performSyncCheck(const std::string& streamName, const std::string& clientId)
+int DBManager::performSyncCheck(const std::string& streamName,
+                                const std::string& clientId,
+                                const std::string& authToken)
 {
-    int result=1;
-    std::unique_ptr<sql::Connection>conn;
+    std::unique_ptr<sql::Connection> conn = nullptr;
+    int result = 0; // 0 表示业务认证失败
 
     try
     {
-        conn=getConnection();
+        conn = getConnection();
 
-        std::unique_ptr<sql::PreparedStatement>pstmt(conn->prepareStatement("SELECT COUNT(id) FROM streams WHERE name=? AND client_id=? AND status=1"));
+        if (! conn)
+        {
+            std::cerr << "DBManager Error: Failed to get connection from pool (exhausted)." << std::endl;
+            return -1; // DB 错误
+        }
 
-        pstmt->setString(1,streamName);
-        pstmt->setString(2,clientId);
+        std::unique_ptr<sql::PreparedStatement> pstmt(
+            conn->prepareStatement(
+                "SELECT COUNT(id) FROM stream_auth WHERE stream_key=? AND client_id=? AND auth_token=? AND is_active=1"));
 
-        std::unique_ptr<sql::ResultSet>res(pstmt->executeQuery());
+        pstmt->setString(1, streamName);
+        pstmt->setString(2, clientId);
+        pstmt->setString(3, authToken);
+
+        std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
 
         if (res->next())
         {
-            int count=res->getInt(1);
-            if (count>0)
+            int count = res->getInt(1);
+            if (count > 0)
             {
-                result=0;
+                result = 1; // 业务认证成功
             }
         }
-        std::cout << "DBManager: Sync check for stream "<<streamName<<" completed. Result: " <<(result==0?"Success":"Failed")<<std::endl;
-    }catch (const sql::SQLException&e)
+        std::cout << "DBManager: Sync check for stream " << streamName << " completed. Result: " << (
+            result == 1 ? "Success" : "Failed") << std::endl;
+
+        releaseConnection(std::move(conn));
+    }
+    catch (const sql::SQLException& e)
     {
-        std::cerr<<"DBManager SQL Query Error: " <<e.what()<<" (Stream: " <<streamName<<")" << std::endl;
-        result=-1;
-    }catch (const std::exception&e)
+        std::cerr << "DBManager SQL Query Error: " << e.what() << " (Stream: " << streamName <<
+            "). Dropping connection." << std::endl;
+        result = -1; // DB 错误
+    }
+    catch (const std::exception& e)
     {
-        std::cerr << "DBManager General Error: " << e.what() << std::endl;
-        result=-2;
+        std::cerr << "DBManager General Error: " << e.what() << ". Dropping connection." << std::endl;
+        result = -2; // 系统错误
     }
 
-    releaseConnection(std::move(conn));
     return result;
 }
 
-std::future<int> DBManager::asyncCheckStream(const std::string& streamName, const std::string& clientId)
+std::future<int> DBManager::asyncCheckStream(const std::string& streamName,
+                                             const std::string& clientId,
+                                             const std::string& authToken)
 {
     return _threadPool->submit(
         &DBManager::performSyncCheck,
         this,
         streamName,
-        clientId
+        clientId,
+        authToken
         );
 }
-

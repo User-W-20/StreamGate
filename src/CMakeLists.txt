@@ -1,6 +1,10 @@
 find_package(Boost 1.83.0 REQUIRED COMPONENTS system json)
 find_package(PkgConfig REQUIRED)
 
+find_package(GTest REQUIRED)
+include_directories(${GTEST_INCLUDE_DIRS})
+
+
 # cpp_redis
 pkg_check_modules(CPP_REDIS REQUIRED cpp_redis)
 
@@ -34,9 +38,20 @@ set(SOURCES
         cache/CacheManager.cpp
         db/DBManager.cpp
         util/ConfigLoader.cpp
+
 )
 
+set(TEST_SOURCES
+        test/test_auth.cpp
+
+        auth/AuthManager.cpp
+        cache/CacheManager.cpp
+        db/DBManager.cpp
+        util/ConfigLoader.cpp)
+
 add_executable(streamgate_hook_server ${SOURCES})
+
+add_executable(test01 ${TEST_SOURCES})
 
 target_include_directories(streamgate_hook_server PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../include
@@ -52,6 +67,22 @@ target_link_libraries(streamgate_hook_server PRIVATE
         # MariaDB C++ Connector
         ${MARIADB_CPP}
         ${MARIADB_CLIENT}
+
+        # redis
+        ${CPP_REDIS_LIBRARIES}
+        tacopie
+)
+
+target_link_libraries(test01 PRIVATE
+        pthread
+        Boost::system
+        Boost::json
+
+        # MariaDB C++ Connector
+        ${MARIADB_CPP}
+        ${MARIADB_CLIENT}
+
+        ${GTEST_LIBRARIES}
 
         # redis
         ${CPP_REDIS_LIBRARIES}

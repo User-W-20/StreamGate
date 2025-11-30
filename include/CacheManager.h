@@ -25,11 +25,13 @@ class CacheManager
 public:
     static CacheManager& instance();
 
-    void connect();
-
     std::future<int> getAuthResult(const std::string& streamKey, const std::string& clientId);
-
     std::future<void> setAuthResult(const std::string& streamKey, const std::string& clientId, int result);
+
+    std::future<int> getAuthResult(const std::string& cacheKey);
+    void setAuthResult(const std::string& cacheKey, int result);
+
+    void start_io_loop();
 
     CacheManager(const CacheManager&) = delete;
     CacheManager& operator=(const CacheManager&) = delete;
@@ -40,12 +42,15 @@ private:
 
     std::unique_ptr<cpp_redis::client> _client;
 
-
     int _cacheTTL = 300;
 
     [[nodiscard]] static std::string buildKey(const std::string& streamKey, const std::string& clientId);
 
     int performSyncGet(const std::string& key);
     void performSyncSet(const std::string& key, int result);
+
+    boost::asio::io_context _io_context;
+    std::unique_ptr<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>> _work_guard;
+    std::vector<std::thread> _io_threads;
 };
 #endif  // STREAMGATE_CACHEMANAGER_H
