@@ -2,6 +2,8 @@
 // Created by X on 2025/11/24.
 //
 #include <iostream>
+#include <thread>
+
 #include "HookServer.h"
 #include "ConfigLoader.h"
 #include "DBManager.h"
@@ -18,6 +20,8 @@ int main(int argc, char* argv[])
         CacheManager::instance().start_io_loop();
 
         DBManager::instance().connect();
+
+        std::this_thread::sleep_for((std::chrono::milliseconds(500)));
 
         StreamGateServer server;
 

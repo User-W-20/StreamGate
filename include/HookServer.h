@@ -43,12 +43,15 @@ private:
     //异步写
     void do_write(http::message_generator&& msg);
 
-    void on_write(bool keep_alive,beast::error_code ec, std::size_t bytes_transferred);
+    void on_write(bool keep_alive, beast::error_code ec, std::size_t bytes_transferred);
     tcp::socket socket_;
     net::strand<net::any_io_executor> strand_;
 
     beast::flat_buffer buffer_;                //存储异步读取数据
     http::request<http::string_body> request_; //存储解析后的http请求
+
+    //std::string extract_token_from_param(const std::string& paramString);
+    std::string extract_param(const std::string&paramString,const std::string &key);
 };
 
 //服务器监听类

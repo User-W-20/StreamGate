@@ -155,6 +155,7 @@ int AuthManager::performCheck(const std::string& streamName, const std::string& 
 
 int AuthManager::checkHook(const std::string& body)
 {
+    std::cout << "checkHook body: " << body << std::endl;
     std::string streamName, clientId, authToken;
 
     if (! parseBody(body, streamName, clientId, authToken))

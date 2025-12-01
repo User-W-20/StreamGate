@@ -53,6 +53,8 @@ void HookSession::on_read(beast::error_code ec, std::size_t bytes_transferred)
 
 void HookSession::handle_request()
 {
+    std::cout << "Hook received request: " << request_.body() << std::endl;
+
     using response_type = http::response<http::string_body>;
     response_type res;
 
@@ -65,11 +67,19 @@ void HookSession::handle_request()
         {
             boost::json::value jv = boost::json::parse(request_.body());
 
-            std::string streamKey = jv.at("streamKey").as_string().c_str();
-            std::string clientId = jv.at("clientId").as_string().c_str();
-            std::string authToken = jv.at("authToken").as_string().c_str();
+            std::string streamName = jv.at("stream").as_string().c_str();
 
-            bool is_authenticated = AuthManager::instance().authenticate(streamKey, clientId, authToken);
+            std::string paramString = jv.at("param").as_string().c_str();
+
+            std::string authToken = extract_param(paramString,"auth_token");
+            std::string clientId=extract_param(paramString,"client_id");
+
+            bool is_authenticated = AuthManager::instance().authenticate(streamName, clientId, authToken);
+
+            std::cout << "Param string: " << paramString << std::endl;
+            std::cout << "Extracted auth_token: " << authToken << std::endl;
+            std::cout << "Extracted client_id: " << clientId << std::endl;
+            std::cout << "StreamName: " << streamName << ", clientId: " << clientId << std::endl;
 
             if (is_authenticated)
             {
@@ -265,4 +275,44 @@ void StreamGateServer::run()
     }
 
     std::cout << "--- StreamGate Server shutdown complete ---" << std::endl;
+}
+
+
+// std::string  HookSession::extract_token_from_param(const std::string& paramString)
+// {
+//     std::string search_key = "auth_token=";
+//     size_t start_pos = paramString.find(search_key);
+//
+//     if (start_pos == std::string::npos)
+//     {
+//         return "";
+//     }
+//
+//     start_pos += search_key.length();
+//
+//     size_t end_pos = paramString.find('&', start_pos);
+//
+//     if (end_pos == std::string::npos)
+//     {
+//         return paramString.substr(start_pos);
+//     }
+//
+//     return paramString.substr(start_pos, end_pos - start_pos);
+// }
+
+std::string HookSession::extract_param(const std::string& paramString, const std::string& key)
+{
+    std::string search_key = key + "=";
+    size_t start_pos = paramString.find(search_key);
+
+    if (start_pos == std::string::npos)
+        return "";
+
+    start_pos += search_key.length();
+
+    size_t end_pos = paramString.find('&', start_pos);
+    if (end_pos == std::string::npos)
+        return paramString.substr(start_pos);
+
+    return paramString.substr(start_pos, end_pos - start_pos);
 }
