@@ -8,6 +8,7 @@
 #include "ConfigLoader.h"
 #include "DBManager.h"
 #include "CacheManager.h"
+#include "Logger.h"
 
 int main(int argc, char* argv[])
 {
@@ -25,14 +26,14 @@ int main(int argc, char* argv[])
 
         StreamGateServer server;
 
-        std::cout << "Starting StreamGate Server..." << std::endl;
+        LOG_INFO("Starting StreamGate Server...");
         server.run();
     }
     catch (const std::exception& e)
     {
-        std::cerr << "Server critical error: " << e.what() << std::endl;
+        LOG_ERROR("Server critical error: " +std::string(e.what()));
         return 1;
     }
-    std::cout << "Server stopped gracefully." << std::endl;
+    LOG_INFO("Server stopped gracefully.");
     return 0;
 }

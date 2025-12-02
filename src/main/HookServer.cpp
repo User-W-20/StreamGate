@@ -3,6 +3,7 @@
 //
 #include "HookServer.h"
 #include "AuthManager.h"
+#include "Logger.h"
 #include <iostream>
 #include <thread>
 #include <boost/json.hpp>
@@ -44,7 +45,7 @@ void HookSession::on_read(beast::error_code ec, std::size_t bytes_transferred)
 
     if (ec)
     {
-        std::cerr << "Read error: " << ec.message() << std::endl;
+        LOG_ERROR("Read error: "+ec.message());
         return;
     }
 
@@ -53,7 +54,7 @@ void HookSession::on_read(beast::error_code ec, std::size_t bytes_transferred)
 
 void HookSession::handle_request()
 {
-    std::cout << "Hook received request: " << request_.body() << std::endl;
+    LOG_INFO("Hook received request: "+request_.body());
 
     using response_type = http::response<http::string_body>;
     response_type res;
@@ -71,15 +72,15 @@ void HookSession::handle_request()
 
             std::string paramString = jv.at("param").as_string().c_str();
 
-            std::string authToken = extract_param(paramString,"auth_token");
-            std::string clientId=extract_param(paramString,"client_id");
+            std::string authToken = extract_param(paramString, "auth_token");
+            std::string clientId = extract_param(paramString, "client_id");
 
             bool is_authenticated = AuthManager::instance().authenticate(streamName, clientId, authToken);
 
-            std::cout << "Param string: " << paramString << std::endl;
-            std::cout << "Extracted auth_token: " << authToken << std::endl;
-            std::cout << "Extracted client_id: " << clientId << std::endl;
-            std::cout << "StreamName: " << streamName << ", clientId: " << clientId << std::endl;
+            LOG_INFO("Param string: "+paramString);
+            LOG_INFO("Extracted auth_token: "+authToken);
+            LOG_INFO("Extracted client_id: "+clientId);
+            LOG_INFO("StreamName: " +streamName+ ", clientId: "+clientId);
 
             if (is_authenticated)
             {
@@ -94,19 +95,19 @@ void HookSession::handle_request()
         }
         catch (const boost::json::system_error& e)
         {
-            std::cerr << "JSON Parsing Error (400): " << e.code().message() << std::endl;
+            LOG_ERROR("JSON Parsing Error (400): "+e.code().message());
             res.result(http::status::bad_request);
             res.body() = R"({"code":2,"msg":"invalid json format or syntax error"})";
         }
         catch (const std::out_of_range& e)
         {
-            std::cerr << "JSON Key Missing Error (400): " << e.what() << std::endl;
+            LOG_ERROR("JSON Key Missing Error (400): "+std::string(e.what()));
             res.result(http::status::bad_request);
             res.body() = R"({"code":3,"msg":"missing required key"})";
         }
         catch (const std::exception& e)
         {
-            std::cerr << "Internal Server Error (500) during auth: " << e.what() << std::endl;
+            LOG_ERROR("Internal Server Error (500) during auth: "+std::string(e.what()));
             res.result(http::status::internal_server_error);
             res.body() = R"({"code":4,"msg":"internal server error"})";
         }
@@ -140,7 +141,7 @@ void HookSession::on_write(bool keep_alive, beast::error_code ec, std::size_t by
 {
     if (ec)
     {
-        std::cerr << "Write error: " << ec.message() << std::endl;
+        LOG_ERROR("Write error: "+ec.message());
         return;
     }
 
@@ -154,7 +155,7 @@ void HookSession::on_write(bool keep_alive, beast::error_code ec, std::size_t by
         socket_.shutdown(tcp::socket::shutdown_send, shutdown_ec);
         if (shutdown_ec)
         {
-            std::cerr << "Shutdown error: " << shutdown_ec.message() << std::endl;
+            LOG_ERROR("Shutdown error: "+shutdown_ec.message());
         }
     }
 }
@@ -187,7 +188,7 @@ StreamGateListener::StreamGateListener(net::io_context& ioc, const tcp::endpoint
 
 void StreamGateListener::run()
 {
-    std::cout << "Server listening on port " << acceptor_.local_endpoint().port() << std::endl;
+    LOG_INFO("Server listening on port " +std::to_string(acceptor_.local_endpoint().port()));
 
     do_accept();
 }
@@ -203,7 +204,7 @@ void StreamGateListener::do_accept()
 
             if (ec)
             {
-                std::cerr << "Accept error: " << ec.message() << std::endl;
+                LOG_ERROR("Accept error: " +ec.message());
             }
             else
             {
@@ -216,17 +217,17 @@ void StreamGateListener::do_accept()
 
 void StreamGateServer::initialize()
 {
-    std::cout << "--- StreamGate Server Initialization ---" << std::endl;
+    LOG_INFO("--- StreamGate Server Initialization ---");
 
     try
     {
         ConfigLoader::instance().load(".env");
 
-        std::cout << "Initialization complete." << std::endl;
+        LOG_INFO("Initialization complete.");
     }
     catch (const std::exception& e)
     {
-        std::cerr << "FATAL Initialization Error: " << e.what() << std::endl;
+        LOG_FATAL("FATAL Initialization Error: " +std::string(e.what()));
         throw;
     }
 }
@@ -262,8 +263,8 @@ void StreamGateServer::run()
         });
     }
 
-    std::cout << "Starting IO service on " << address << ":" << port << " with " << num_threads << " threads..." <<
-        std::endl;
+    LOG_INFO(
+        "Starting IO service on "+address+":"+std::to_string(port)+" with "+std::to_string(num_threads)+ " threads...");
     start_service();
 
     for (auto& t : threads)
@@ -274,31 +275,9 @@ void StreamGateServer::run()
         }
     }
 
-    std::cout << "--- StreamGate Server shutdown complete ---" << std::endl;
+    LOG_INFO("--- StreamGate Server shutdown complete ---");
 }
 
-
-// std::string  HookSession::extract_token_from_param(const std::string& paramString)
-// {
-//     std::string search_key = "auth_token=";
-//     size_t start_pos = paramString.find(search_key);
-//
-//     if (start_pos == std::string::npos)
-//     {
-//         return "";
-//     }
-//
-//     start_pos += search_key.length();
-//
-//     size_t end_pos = paramString.find('&', start_pos);
-//
-//     if (end_pos == std::string::npos)
-//     {
-//         return paramString.substr(start_pos);
-//     }
-//
-//     return paramString.substr(start_pos, end_pos - start_pos);
-// }
 
 std::string HookSession::extract_param(const std::string& paramString, const std::string& key)
 {

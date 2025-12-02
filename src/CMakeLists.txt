@@ -38,6 +38,7 @@ set(SOURCES
         cache/CacheManager.cpp
         db/DBManager.cpp
         util/ConfigLoader.cpp
+        util/Logger.cpp
 
 )
 
@@ -47,7 +48,9 @@ set(TEST_SOURCES
         auth/AuthManager.cpp
         cache/CacheManager.cpp
         db/DBManager.cpp
-        util/ConfigLoader.cpp)
+        util/ConfigLoader.cpp
+        util/Logger.cpp
+)
 
 add_executable(streamgate_hook_server ${SOURCES})
 

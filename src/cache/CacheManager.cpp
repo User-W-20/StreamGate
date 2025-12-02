@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <boost/lexical_cast.hpp>
 #include "ConfigLoader.h"
+#include "Logger.h"
 
 namespace net = boost::asio;
 using namespace std::chrono;
@@ -59,12 +60,12 @@ void CacheManager::start_io_loop()
             }
             catch (const std::exception& e)
             {
-                std::cerr << "CacheManager I/O thread crashed: " << e.what() << std::endl;
+                LOG_FATAL("CacheManager I/O thread crashed: "+std::string(e.what()));
             }
         });
     }
 
-    std::cout << "CacheManager: Initializing cpp_redis client (self-managed I/O)..." << std::endl;
+    LOG_INFO("CacheManager: Initializing cpp_redis client (self-managed I/O)...");
 
     try
     {
@@ -78,7 +79,7 @@ void CacheManager::start_io_loop()
                          {
                              if (status == cpp_redis::client::connect_state::dropped)
                              {
-                                 std::cerr << "Redis connection dropped. Reconnecting...\n";
+                                 LOG_WARN("Redis connection dropped. Reconnecting...");
 
                                  try
                                  {
@@ -91,13 +92,14 @@ void CacheManager::start_io_loop()
                          });
 
         _client->sync_commit(std::chrono::milliseconds(50));
-        std::cout << "CacheManager: Redis connection initiated. I/O loop running on " << thread_count << " threads." <<
-            std::endl;
+        LOG_INFO(
+            "CacheManager: Redis connection initiated. I/O loop running on " +std::to_string(thread_count)+" threads.");
     }
     catch (const std::exception& e)
     {
-        std::cerr << "CacheManager Warning: Configuration or initial setup failed (Proceeding without Redis): " << e.
-            what() << std::endl;
+        LOG_WARN(
+            "CacheManager Warning: Configuration or initial setup failed (Proceeding without Redis): " +std::string(e.
+                what()));
     }
 }
 
@@ -112,13 +114,13 @@ int CacheManager::performSyncGet(const std::string& key)
     {
         if (! _client->is_connected())
         {
-            std::cerr << "Redis GET Error: not connected\n";
+            LOG_ERROR("Redis GET Error: not connected");
             return CACHE_ERROR;
         }
 
         auto future_reply = _client->get(key);
 
-        _client->sync_commit(std::chrono::milliseconds(50));
+        _client->sync_commit(milliseconds(50));
 
         auto reply = future_reply.get();
 
@@ -139,7 +141,7 @@ int CacheManager::performSyncGet(const std::string& key)
     }
     catch (const std::exception& e)
     {
-        std::cerr << "Redis GET Exception: " << e.what() << "\n";
+        LOG_ERROR("Redis GET Exception: "+std::string(e.what()));
         return CACHE_ERROR;
     }
     catch (...)
@@ -155,7 +157,7 @@ void CacheManager::performSyncSet(const std::string& key, int result)
     {
         if (! _client->is_connected())
         {
-            std::cerr << "Redis SET Error: client disconnected\n";
+            LOG_ERROR("Redis SET Error: client disconnected");
             return;
         }
 
@@ -168,7 +170,7 @@ void CacheManager::performSyncSet(const std::string& key, int result)
                        {
                            if (reply.is_error())
                            {
-                               std::cerr << "Redis SETEX Error: " << reply.as_string() << std::endl;
+                               LOG_ERROR("Redis SETEX Error: " +reply.as_string());
                            }
                        });
 
@@ -176,11 +178,11 @@ void CacheManager::performSyncSet(const std::string& key, int result)
     }
     catch (const std::exception& e)
     {
-        std::cerr << "Redis I/O Error during SET for key " << key << ": " << e.what() << std::endl;
+        LOG_ERROR("Redis I/O Error during SET for key "+key+": " +std::string(e.what()));
     }
     catch (...)
     {
-        std::cerr << "CacheManager Unknown Error during SET for key " << key << "." << std::endl;
+        LOG_ERROR("CacheManager Unknown Error during SET for key "+key+".");
     }
 }
 

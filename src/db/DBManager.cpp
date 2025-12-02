@@ -3,6 +3,7 @@
 //
 #include "DBManager.h"
 #include "ConfigLoader.h"
+#include "Logger.h"
 #include <iostream>
 #include <stdexcept>
 #include <chrono>
@@ -94,18 +95,17 @@ std::unique_ptr<sql::Connection> DBManager::getConnection()
         catch (const sql::SQLException& e)
         {
             // 捕获 SQL 异常，说明连接失效。丢弃它，继续检查下一个。
-            std::cerr << "DBManager getConnection SQL Error (Stale): " << e.what() << ". Dropping connection." <<
-                std::endl;
+            LOG_ERROR("DBManager getConnection SQL Error (Stale): "+std::string(e.what())+". Dropping connection.");
             continue;
         }
         catch (const std::exception& e)
         {
-            std::cerr << "DBManager getConnection General Error: " << e.what() << ". Dropping connection." << std::endl;
+            LOG_ERROR("DBManager getConnection General Error: "+std::string(e.what())+ ". Dropping connection.");
             continue;
         }
         catch (...)
         {
-            std::cerr << "DBManager getConnection Unknown Error. Dropping connection." << std::endl;
+            LOG_ERROR("DBManager getConnection Unknown Error. Dropping connection.");
             continue;
         }
     }
@@ -134,7 +134,7 @@ void DBManager::releaseConnection(std::unique_ptr<sql::Connection> conn)
 
 void DBManager::connect()
 {
-    std::cout << "DBManager: Initializing MariaDB connection pool..." << std::endl;
+    LOG_INFO("DBManager: Initializing MariaDB connection pool...");
     std::vector<std::unique_ptr<sql::Connection>> temp_pool;
 
     try
@@ -163,17 +163,18 @@ void DBManager::connect()
             }
         }
 
-        std::cout << "DBManager: MariaDB connection pool initialized. (Host: " << host << ", Pool Size: " <<
-            initial_pool_size << ")" << std::endl;
+        LOG_INFO(
+            "DBManager: MariaDB connection pool initialized. (Host: "+host+ ", Pool Size: "+ std::to_string(
+                initial_pool_size)+")");
     }
     catch (const sql::SQLException& e)
     {
-        std::cerr << "DBManager FATAL SQL ERROR during connection: " << e.what() << std::endl;
+        LOG_FATAL("DBManager FATAL SQL ERROR during connection: "+std::string(e.what()));
         throw;
     }
     catch (const std::exception& e)
     {
-        std::cerr << "DBManager FATAL ERROR: " << e.what() << std::endl;
+        LOG_FATAL("DBManager FATAL ERROR: " +std::string(e.what()));
         throw;
     }
 }
@@ -191,7 +192,7 @@ int DBManager::performSyncCheck(const std::string& streamName,
 
         if (! conn)
         {
-            std::cerr << "DBManager Error: Failed to get connection from pool (exhausted)." << std::endl;
+            LOG_ERROR("DBManager Error: Failed to get connection from pool (exhausted).");
             return -1; // DB 错误
         }
 
@@ -213,20 +214,19 @@ int DBManager::performSyncCheck(const std::string& streamName,
                 result = 1; // 业务认证成功
             }
         }
-        std::cout << "DBManager: Sync check for stream " << streamName << " completed. Result: " << (
-            result == 1 ? "Success" : "Failed") << std::endl;
-
+        std::string result_str = result == 1 ? "Success" : "Failed";
+        LOG_INFO("DBManager: Sync check for stream " +streamName+ " completed. Result: "+result_str);
         releaseConnection(std::move(conn));
     }
     catch (const sql::SQLException& e)
     {
-        std::cerr << "DBManager SQL Query Error: " << e.what() << " (Stream: " << streamName <<
-            "). Dropping connection." << std::endl;
+        LOG_ERROR(
+            "DBManager SQL Query Error: "+std::string(e.what())+" (Stream: "+streamName+ "). Dropping connection.");
         result = -1; // DB 错误
     }
     catch (const std::exception& e)
     {
-        std::cerr << "DBManager General Error: " << e.what() << ". Dropping connection." << std::endl;
+        LOG_ERROR("DBManager General Error: " +std::string(e.what())+". Dropping connection.");
         result = -2; // 系统错误
     }
 

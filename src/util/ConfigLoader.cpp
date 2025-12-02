@@ -2,7 +2,7 @@
 // Created by X on 2025/11/18.
 //
 #include "ConfigLoader.h"
-
+#include "Logger.h"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -71,7 +71,7 @@ void ConfigLoader::load(const std::string& filename)
 {
     _configMap.clear();
     parseFile(filename);
-    std::cout << "ConfigLoader: Configuration loaded from " << filename << std::endl;
+    LOG_INFO("ConfigLoader: Configuration loaded from "+filename);
 }
 
 bool ConfigLoader::has(const std::string& key) const
@@ -107,9 +107,9 @@ int ConfigLoader::getInt(const std::string& key, int defaultValue) const
     }
     catch (const std::exception& e)
     {
-        std::cerr << "ConfigLoader Warning: Key '" << key
-            << "' is not a valid integer: " << e.what()
-            << ". Using default value." << std::endl;
+        LOG_WARN(
+            "ConfigLoader Warning: Key '"+key+"' is not a valid integer: " +std::string(e.what())+
+            ". Using default value.");
         return defaultValue;
     }
 }

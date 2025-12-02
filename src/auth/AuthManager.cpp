@@ -4,9 +4,11 @@
 #include "AuthManager.h"
 #include "DBManager.h"
 #include "CacheManager.h"
+#include "Logger.h"
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+
 
 namespace AuthError
 {
@@ -33,7 +35,7 @@ bool AuthManager::parseBody(const std::string& body,
 {
     if (body.empty())
     {
-        std::cerr << "AuthManager: Request body is empty." << std::endl;
+        LOG_ERROR("AuthManager: Request body is empty.");
         return false;
     }
 
@@ -50,7 +52,7 @@ bool AuthManager::parseBody(const std::string& body,
         }
         else
         {
-            std::cerr << "AuthManager: Missing or invalid 'streamKey' in JSON." << std::endl;
+            LOG_ERROR("AuthManager: Missing or invalid 'streamKey' in JSON.");
             return false;
         }
 
@@ -60,7 +62,7 @@ bool AuthManager::parseBody(const std::string& body,
         }
         else
         {
-            std::cerr << "AuthManager: Missing or invalid 'clientId' in JSON." << std::endl;
+            LOG_ERROR("AuthManager: Missing or invalid 'clientId' in JSON.");
             return false;
         }
 
@@ -70,7 +72,7 @@ bool AuthManager::parseBody(const std::string& body,
         }
         else
         {
-            std::cerr << "AuthManager: Missing or invalid 'authToken' in JSON." << std::endl;
+            LOG_ERROR("AuthManager: Missing or invalid 'authToken' in JSON.");
             return false;
         }
 
@@ -78,12 +80,12 @@ bool AuthManager::parseBody(const std::string& body,
     }
     catch (const boost::json::system_error& e)
     {
-        std::cerr << "AuthManager: JSON parse error: " << e.what() << std::endl;
+        LOG_ERROR("AuthManager: JSON parse error: " +std::string(e.what()));
         return false;
     }
     catch (const std::exception& e)
     {
-        std::cerr << "AuthManager: Unexpected error during JSON parsing: " << e.what() << std::endl;
+        LOG_ERROR("AuthManager: Unexpected error during JSON parsing: " +std::string(e.what()));
         return false;
     }
 }
@@ -99,23 +101,23 @@ int AuthManager::performCheck(const std::string& streamName, const std::string& 
 
         if (cache_result == CACHE_HIT_SUCCESS)
         {
-            std::cout << "AuthManager: Cache HIT (SUCCESS) for stream: " << streamName << std::endl;
+            LOG_INFO("AuthManager: Cache HIT (SUCCESS) for stream: "+streamName);
             return AuthError::SUCCESS;
         }
 
         if (cache_result == CACHE_HIT_FAILURE)
         {
-            std::cout << "AuthManager: Cache HIT (FAILURE) for stream: " << streamName << std::endl;
+            LOG_INFO("AuthManager: Cache HIT (FAILURE) for stream: "+streamName);
             return AuthError::CACHE_AUTH_FAIL;
         }
 
         if (cache_result == CACHE_MISS)
         {
-            std::cout << "AuthManager: Cache MISS. Falling back to DB." << std::endl;
+            LOG_INFO("AuthManager: Cache MISS. Falling back to DB.");
         }
         else
         {
-            std::cerr << "AuthManager Warning: Cache service error. Falling back to DB." << std::endl;
+            LOG_WARN("AuthManager Warning: Cache service error. Falling back to DB.");
         }
 
         std::future<int> db_future = DBManager::instance().asyncCheckStream(streamName, clientId, authToken);
@@ -131,7 +133,7 @@ int AuthManager::performCheck(const std::string& streamName, const std::string& 
         }
         else if (db_result == -1 || db_result == -2)
         {
-            std::cerr << "AuthManager Error: DB internal error (Code: " << db_result << "). Fail Closed." << std::endl;
+            LOG_ERROR("AuthManager Error: DB internal error (Code: "+std::to_string(db_result)+"). Fail Closed.");
             return AuthError::DB_ERROR;
         }
 
@@ -142,20 +144,19 @@ int AuthManager::performCheck(const std::string& streamName, const std::string& 
     }
     catch (const std::future_error& e)
     {
-        std::cerr << "AuthManager FATAL Error: Future/Thread Pool exception: " << e.what() << ". Fail Closed." <<
-            std::endl;
+        LOG_FATAL("AuthManager FATAL Error: Future/Thread Pool exception: "+std::string(e.what())+ ". Fail Closed.");
         return AuthError::RUNTIME_ERROR;
     }
     catch (const std::exception& e)
     {
-        std::cerr << "AuthManager FATAL Error: Unhandled exception: " << e.what() << ". Fail Closed." << std::endl;
+        LOG_FATAL("AuthManager FATAL Error: Unhandled exception: " +std::string(e.what())+". Fail Closed.");
         return AuthError::RUNTIME_ERROR;
     }
 }
 
 int AuthManager::checkHook(const std::string& body)
 {
-    std::cout << "checkHook body: " << body << std::endl;
+    LOG_DEBUG("checkHook body: "+body);
     std::string streamName, clientId, authToken;
 
     if (! parseBody(body, streamName, clientId, authToken))
@@ -191,24 +192,23 @@ bool AuthManager::authenticate(const std::string& streamKey, const std::string& 
 
         if (cache_result == CACHE_HIT_SUCCESS)
         {
-            std::cout << "AuthManager: Cache HIT (SUCCESS) for stream: " << streamKey << std::endl;
+            LOG_INFO("AuthManager: Cache HIT (SUCCESS) for stream: " +streamKey);
             return true;
         }
 
         if (cache_result == CACHE_HIT_FAILURE)
         {
-            std::cout << "AuthManager: Cache HIT (FAILURE) for stream: " << streamKey << std::endl;
+            LOG_INFO("AuthManager: Cache HIT (FAILURE) for stream: "+streamKey);
             return false;
         }
 
         if (cache_result == CACHE_MISS)
         {
-            std::cout << "AuthManager: Cache MISS for stream: " << streamKey << ". Falling back to DB." << std::endl;
+            LOG_INFO("AuthManager: Cache MISS for stream: "+streamKey+". Falling back to DB.");
         }
         else
         {
-            std::cerr << "AuthManager Warning: Cache service error for stream: " << streamKey << ". Falling back to DB."
-                << std::endl;
+            LOG_WARN("AuthManager Warning: Cache service error for stream: "+streamKey+". Falling back to DB.");
         }
 
         std::future<int> db_future = DBManager::instance().asyncCheckStream(streamKey, clientId, authToken);
@@ -225,8 +225,9 @@ bool AuthManager::authenticate(const std::string& streamKey, const std::string& 
         }
         else
         {
-            std::cerr << "AuthManager Error: DB check failed internally (Code: " << db_result << ") for stream " <<
-                streamKey << ". Fail Closed." << std::endl;
+            LOG_ERROR(
+                "AuthManager Error: DB check failed internally (Code: "+std::to_string(db_result)+") for stream " +
+                streamKey+ ". Fail Closed.");
             return false;
         }
 
@@ -236,14 +237,16 @@ bool AuthManager::authenticate(const std::string& streamKey, const std::string& 
     }
     catch (const std::future_error& e)
     {
-        std::cerr << "AuthManager FATAL Error: Future/Thread Pool exception for "
-            << streamKey << ": " << e.what() << ". Fail Closed." << std::endl;
+        LOG_FATAL(
+            "AuthManager FATAL Error: Future/Thread Pool exception for "+streamKey+": "+std::string(e.what())+
+            ". Fail Closed.");
         return false;
     }
     catch (const std::exception& e)
     {
-        std::cerr << "AuthManager FATAL Error: Unhandled exception during authentication: "
-            << e.what() << ". Fail Closed." << std::endl;
+        LOG_FATAL(
+            "AuthManager FATAL Error: Unhandled exception during authentication: "+std::string(e.what())+
+            ". Fail Closed.");
         return false;
     }
 }
