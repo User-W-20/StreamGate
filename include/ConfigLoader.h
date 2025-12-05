@@ -15,7 +15,8 @@ class ConfigLoader
 public:
     static ConfigLoader& instance();
 
-    void load(const std::string& filename);
+    void load(const std::string& ini_filename, const std::string& env_filename);
+
 
     [[nodiscard]] std::string getString(const std::string& key) const;
 
@@ -35,5 +36,7 @@ private:
     std::map<std::string, std::string> _configMap;
 
     void parseFile(const std::string& filename);
+
+    void loadEnvironmentVariables();
 };
 #endif //STREAMGATE_CONFIGLOADER_H

@@ -136,7 +136,7 @@ void DBManager::connect()
 {
     LOG_INFO("DBManager: Initializing MariaDB connection pool...");
     std::vector<std::unique_ptr<sql::Connection>> temp_pool;
-
+    ConfigLoader& config = ConfigLoader::instance();
     try
     {
         const std::string host = ConfigLoader::instance().getString("DB_HOST");
@@ -145,8 +145,9 @@ void DBManager::connect()
         const std::string pass = ConfigLoader::instance().getString("DB_PASS");
         const std::string name = ConfigLoader::instance().getString("DB_NAME");
 
+        const size_t initial_pool_size = config.getInt("DB_POOL_SIZE", 5);
+
         const std::string url = "jdbc:mariadb://" + host + ":" + std::to_string(port);
-        constexpr size_t initial_pool_size = 5;
 
         for (size_t i = 0; i < initial_pool_size; ++i)
         {
@@ -244,4 +245,29 @@ std::future<int> DBManager::asyncCheckStream(const std::string& streamName,
         clientId,
         authToken
         );
+}
+
+bool DBManager::insertAuthForTest(const std::string& stream, const std::string& client, const std::string& token)
+{
+    try
+    {
+        auto conn = getConnection();
+        std::unique_ptr<sql::PreparedStatement> stmt(
+            conn->prepareStatement(
+                "REPLACE INTO stream_auth(stream_key, client_id, auth_token) VALUES(?, ?, ?)"
+                ));
+
+        stmt->setString(1, stream);
+        stmt->setString(2, client);
+        stmt->setString(3, token);
+        stmt->executeUpdate();
+        conn->commit();
+        releaseConnection(std::move(conn));
+        return true;
+    }
+    catch (const sql::SQLException& e)
+    {
+        std::cerr << "Insert test auth failed: " << e.what() << std::endl;
+        return false;
+    }
 }

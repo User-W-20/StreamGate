@@ -50,8 +50,7 @@ private:
     beast::flat_buffer buffer_;                //存储异步读取数据
     http::request<http::string_body> request_; //存储解析后的http请求
 
-    //std::string extract_token_from_param(const std::string& paramString);
-    std::string extract_param(const std::string&paramString,const std::string &key);
+    void send_response(int http_status, int business_code, const std::string& message);
 };
 
 //服务器监听类
@@ -64,6 +63,8 @@ public:
         );
 
     void run();
+
+    void stop();
 
 private:
     void do_accept();
@@ -78,11 +79,21 @@ class StreamGateServer
 public:
     void run();
 
-private:
-    void initialize();
+    StreamGateServer(const std::string& address, int port, int io_threads);
 
-    void start_service();
+    ~StreamGateServer();
+
+    void stop();
+
+private:
+    void start_service(int io_threads);
+
+    std::vector<std::thread> io_threads_pool_;
+
+    std::optional<net::executor_work_guard<net::io_context::executor_type>> work_guard_;
 
     net::io_context ioc_;
+
+    std::shared_ptr<StreamGateListener> listener_;
 };
 #endif //STREAMGATE_HOOKSERVER_CPP_H

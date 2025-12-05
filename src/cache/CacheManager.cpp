@@ -46,10 +46,13 @@ CacheManager::~CacheManager()
 
 void CacheManager::start_io_loop()
 {
+    ConfigLoader& config=ConfigLoader::instance();
+
+    const size_t thread_count=config.getInt("REDIS_IO_THREADS",2);
+
     _work_guard = std::make_unique<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(
         boost::asio::make_work_guard(_io_context));
 
-    const size_t thread_count = 2;
     for (size_t i = 0; i < thread_count; ++i)
     {
         _io_threads.emplace_back([this]()
@@ -71,7 +74,7 @@ void CacheManager::start_io_loop()
     {
         const std::string host = ConfigLoader::instance().getString("REDIS_HOST");
         const int port = ConfigLoader::instance().getInt("REDIS_PORT");
-        _cacheTTL = ConfigLoader::instance().getInt("CACHE_TTL_SECONDS", 300);
+        _cacheTTL = config.getInt("CACHE_TTL_SECONDS",300);
 
         _client->connect(host,
                          port,

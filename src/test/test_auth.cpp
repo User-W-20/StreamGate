@@ -1,168 +1,181 @@
-// test/hook_server_integration_test.cpp
-
 #include "gtest/gtest.h"
 #include "AuthManager.h"
 #include "CacheManager.h"
 #include "DBManager.h"
 #include "ConfigLoader.h"
+#include "HookServer.h"
 #include <iostream>
-#include <cstdlib>
 #include <thread>
 #include <chrono>
+#include <atomic>
 
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+
+namespace net = boost::asio;
+namespace beast = boost::beast;
+namespace http = beast::http;
+using tcp = net::ip::tcp;
 using namespace std::chrono_literals;
 
-// 辅助函数：模拟启动/关闭服务 (需要 sudo 权限运行测试)
+// ---------------------- 模拟服务控制 ----------------------
 void toggle_service(const std::string& service_name, bool start)
 {
-    std::string command = start ? "start" : "stop";
-    std::string full_command = "sudo systemctl " + command + " " + service_name;
-
-    std::cout << "\n>>> " << (start ? "Starting" : "Stopping") << " " << service_name << "... " << std::flush;
-    if (std::system(full_command.c_str()) != 0)
-    {
-        std::cerr << "Warning: Failed to " << command << " " << service_name << ". Assuming target state reached." <<
-            std::endl;
-    }
-    std::this_thread::sleep_for(2s); // 等待服务状态改变
+    std::string cmd = start ? "start" : "stop";
+    std::cout << "\n>>> " << (start ? "Starting" : "Stopping") << service_name << "... " << std::flush;
+    std::string full_cmd = "sudo systemctl " + cmd + " " + service_name;
+    if (std::system(full_cmd.c_str()) != 0)
+        std::cerr << "Warning: Failed to " << cmd << " " << service_name << ". Continuing." << std::endl;
+    std::this_thread::sleep_for(2s);
     std::cout << "Done." << std::endl;
 }
 
-// 定义测试夹具
-class AuthManagerTest : public ::testing::Test
+// ---------------------- 测试夹具 ----------------------
+class HookServerIntegrationTest : public ::testing::Test
 {
 protected:
-    // 模拟成功/失败的参数 (假设这些数据在你的 DB 中存在或不存在)
-    const std::string VALID_STREAM = "test_stream_valid_gtest";
-    const std::string VALID_CLIENT = "client_gtest_001";
-    const std::string VALID_TOKEN = "valid_token_gtest";
+    static constexpr const char* TEST_ADDRESS = "127.0.0.1";
+    static constexpr int TEST_PORT = 9001;
+    static constexpr int IO_THREADS = 4;
 
-    const std::string INVALID_STREAM = "test_stream_invalid_gtest";
+    static constexpr const char* VALID_STREAM = "test_stream_valid_gtest";
+    static constexpr const char* VALID_CLIENT = "client_gtest_001";
+    static constexpr const char* VALID_TOKEN = "valid_token_gtest";
+    static constexpr const char* INVALID_STREAM = "test_stream_invalid_gtest";
 
-    // 模拟 Hook 请求体生成
-    std::string create_hook_body(const std::string& s, const std::string& c, const std::string& t)
+    static StreamGateServer* server_;
+    static std::thread server_thread_;
+    static std::atomic_bool server_started_;
+
+    int send_hook_request(const std::string& stream, const std::string& client, const std::string& token)
     {
-        return "{\"streamKey\":\"" + s + "\", \"clientId\":\"" + c + "\", \"authToken\":\"" + t + "\"}";
+        try
+        {
+            net::io_context ioc;
+            tcp::resolver resolver(ioc);
+            tcp::socket socket(ioc);
+            net::connect(socket, resolver.resolve(TEST_ADDRESS, std::to_string(TEST_PORT)));
+
+            std::string body = "{\"streamKey\":\"" + stream +
+                               "\",\"clientId\":\"" + client +
+                               "\",\"authToken\":\"" + token + "\"}";
+
+            http::request<http::string_body> req{http::verb::post, "/hook", 11};
+            req.set(http::field::host, TEST_ADDRESS);
+            req.set(http::field::user_agent, "IntegrationTestClient");
+            req.set(http::field::content_type, "application/json");
+            req.body() = body;
+            req.prepare_payload();
+
+            http::write(socket, req);
+
+            beast::flat_buffer buffer;
+            http::response<http::string_body> res;
+            http::read(socket, buffer, res);
+
+            return static_cast<int>(res.result_int());
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "Client error: " << e.what() << std::endl;
+            return 503;
+        }
     }
 
-    // 在每个测试开始前运行
     void SetUp() override
     {
-        // 确保所有服务都已启动
-        std::cout << "\n--- TEST SETUP: Ensuring services are ON and connected ---" << std::endl;
+        std::cout << "\n--- TEST SETUP ---" << std::endl;
+
+        // 启动依赖服务
         toggle_service("mariadb", true);
         toggle_service("redis-server", true);
 
-        // 强制初始化单例组件
-        // 注意：在实际项目中，你可能需要在组件中实现 reconnect() 来确保连接是活性的
-        AuthManager::instance();
-
+        ConfigLoader::instance().load("config/config.ini", ".env");
         DBManager::instance().connect();
         CacheManager::instance().start_io_loop();
+        std::this_thread::sleep_for(1s);
 
-        // 暂时等待，让连接有机会建立
-        std::this_thread::sleep_for(3s);
+        // 插入测试数据
+        DBManager::instance().insertAuthForTest(VALID_STREAM, VALID_CLIENT, VALID_TOKEN);
+
+        // 启动 server
+        if (! server_started_)
+        {
+            server_ = new StreamGateServer(TEST_ADDRESS, TEST_PORT, IO_THREADS);
+            server_thread_ = std::thread([]
+            {
+                try
+                {
+                    server_->run();
+                }
+                catch (const std::exception& e)
+                {
+                    std::cerr << "Server thread crashed: " << e.what() << std::endl;
+                }
+            });
+            std::this_thread::sleep_for(2s);
+            server_started_ = true;
+        }
     }
 
-    // 在每个测试结束后运行
     void TearDown() override
     {
-        // 测试结束后，恢复服务到运行状态
-        std::cout << "\n--- TEST TEARDOWN: Restoring services ---" << std::endl;
-        toggle_service("mariadb", true);
-        toggle_service("redis-server", true);
     }
 };
 
-// --------------------------------------------------------------------------------
-// 正常流程测试 (验证缓存逻辑)
-// --------------------------------------------------------------------------------
+// ---------------------- 静态成员 ----------------------
+StreamGateServer* HookServerIntegrationTest::server_ = nullptr;
+std::thread HookServerIntegrationTest::server_thread_;
+std::atomic_bool HookServerIntegrationTest::server_started_ = false;
 
-TEST_F(AuthManagerTest, T01_NormalFlow_CacheHit)
+// ---------------------- 测试 ----------------------
+TEST_F(HookServerIntegrationTest, T01_NormalFlow_CacheHit)
 {
-    // 第一次请求：Cache MISS -> DB Success -> Cache SET
-    std::cout << "  [T01] Running 1st query (MISS)..." << std::endl;
-    int result1 = AuthManager::checkHook(create_hook_body(VALID_STREAM, VALID_CLIENT, VALID_TOKEN));
-    ASSERT_EQ(result1, 200) << "First request (DB) should succeed.";
+    int status1 = send_hook_request(VALID_STREAM, VALID_CLIENT, VALID_TOKEN);
+    ASSERT_EQ(status1, 200);
 
-    // 第二次请求：Cache HIT -> Cache Success
-    std::cout << "  [T01] Running 2nd query (HIT)..." << std::endl;
-    int result2 = AuthManager::checkHook(create_hook_body(VALID_STREAM, VALID_CLIENT, VALID_TOKEN));
-    ASSERT_EQ(result2, 200) << "Second request (Cache) should succeed.";
+    int status2 = send_hook_request(VALID_STREAM, VALID_CLIENT, VALID_TOKEN);
+    ASSERT_EQ(status2, 200);
 }
 
-TEST_F(AuthManagerTest, T02_NormalFlow_DBFailure)
+TEST_F(HookServerIntegrationTest, T02_NormalFlow_DBFailure)
 {
-    // 验证 DB 认证失败 (Cache MISS -> DB Failure -> 403)
-    std::cout << "  [T02] Running query for invalid stream..." << std::endl;
-    int result = AuthManager::checkHook(create_hook_body(INVALID_STREAM, VALID_CLIENT, VALID_TOKEN));
-    ASSERT_EQ(result, 403) << "Request for invalid stream must return 403.";
+    int status = send_hook_request(INVALID_STREAM, VALID_CLIENT, VALID_TOKEN);
+    ASSERT_EQ(status, 403);
 }
 
-// --------------------------------------------------------------------------------
-// 容错测试 - 故障注入
-// --------------------------------------------------------------------------------
-
-TEST_F(AuthManagerTest, T03_FaultTolerance_RedisDown)
+TEST_F(HookServerIntegrationTest, T03_FaultTolerance_RedisDown)
 {
-    // 1. 停止 Redis
     toggle_service("redis-server", false);
-
-    // 2. 执行请求 (预期：Cache ERROR -> DB Success -> 200 OK)
-    const std::string REDIS_DOWN_STREAM = "redis_down_stream";
-    std::cout << "  [T03] Running query with Redis OFF..." << std::endl;
-
-    // 关键验证：服务器不能崩溃 (如果崩溃，测试框架会捕获)
-    int result = AuthManager::checkHook(create_hook_body(REDIS_DOWN_STREAM, VALID_CLIENT, VALID_TOKEN));
-
-    // 验证服务器成功回退到 DB
-    ASSERT_EQ(result, 200) << "Server must successfully fall back to DB when Redis is down.";
+    int status = send_hook_request(VALID_STREAM, VALID_CLIENT, VALID_TOKEN);
+    ASSERT_EQ(status, 200); // 期望服务器能处理 Redis 不可用
+    toggle_service("redis-server", true);
 }
 
-TEST_F(AuthManagerTest, T04_FaultTolerance_DBDown)
+TEST_F(HookServerIntegrationTest, T04_FaultTolerance_DBDown)
 {
-    // 1. 停止 MariaDB
     toggle_service("mariadb", false);
-
-    // 2. 执行请求 (预期：Cache MISS -> DB ERROR -> Fail Closed -> 403 Forbidden)
-    const std::string DB_DOWN_STREAM = "db_down_stream";
-    std::cout << "  [T04] Running query with DB OFF..." << std::endl;
-
-    // 关键验证：服务器不能崩溃
-    int result = AuthManager::checkHook(create_hook_body(DB_DOWN_STREAM, VALID_CLIENT, VALID_TOKEN));
-
-    // 验证服务器执行 Fail Closed 策略
-    ASSERT_EQ(result, 403) << "Server must Fail Closed (403) when DB is down.";
+    int status = send_hook_request(VALID_STREAM, VALID_CLIENT, VALID_TOKEN);
+    ASSERT_EQ(status, 500); // DB 不可用时返回 500
+    toggle_service("mariadb", true);
 }
 
-TEST_F(AuthManagerTest, T05_FaultTolerance_DoubleFailure)
+TEST_F(HookServerIntegrationTest, T05_FaultTolerance_DoubleFailure)
 {
-    // 1. 确保两者都关闭 (DB在T04中关闭，这里关闭Redis)
     toggle_service("redis-server", false);
     toggle_service("mariadb", false);
-
-    // 2. 执行请求 (预期：Cache ERROR -> DB ERROR -> Fail Closed -> 403 Forbidden)
-    const std::string FATAL_STREAM = "fatal_stream";
-    std::cout << "  [T05] Running query with BOTH OFF (Testing SegFault fix)..." << std::endl;
-
-    // 关键验证：这是我们之前遇到 Segment Fault 的地方。如果测试通过，说明你的修复成功。
-    int result = AuthManager::checkHook(create_hook_body(FATAL_STREAM, VALID_CLIENT, VALID_TOKEN));
-
-    ASSERT_EQ(result, 403) << "Server must Fail Closed (403) when both Cache and DB are down.";
+    int status = send_hook_request(VALID_STREAM, VALID_CLIENT, VALID_TOKEN);
+    ASSERT_EQ(status, 500); // 双重故障返回 500
+    toggle_service("redis-server", true);
+    toggle_service("mariadb", true);
 }
 
-// ---
-// 主函数
-// ---
-
+// ---------------------- 主函数 ----------------------
 int main(int argc, char** argv)
 {
-    // 确保配置加载
-    ConfigLoader::instance().load("config/config.ini");
-
-    // 初始化 GTest
+    ConfigLoader::instance().load("config/config.ini", ".env");
     ::testing::InitGoogleTest(&argc, argv);
-
-    // 运行测试，注意必须以 sudo 权限运行
     return RUN_ALL_TESTS();
 }

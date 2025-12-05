@@ -45,6 +45,7 @@ set(SOURCES
 set(TEST_SOURCES
         test/test_auth.cpp
 
+        main/HookServer.cpp
         auth/AuthManager.cpp
         cache/CacheManager.cpp
         db/DBManager.cpp

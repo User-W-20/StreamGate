@@ -74,6 +74,10 @@ public:
     DBManager(const DBManager&) = delete;
     DBManager& operator=(const DBManager&) = delete;
 
+    bool insertAuthForTest(const std::string& stream,
+                           const std::string& client,
+                           const std::string& token);
+
 private:
     DBManager();
     ~DBManager() = default;

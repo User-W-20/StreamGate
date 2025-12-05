@@ -56,72 +56,83 @@ void HookSession::handle_request()
 {
     LOG_INFO("Hook received request: "+request_.body());
 
-    using response_type = http::response<http::string_body>;
-    response_type res;
-
-    res.set(http::field::server, "StreamGate-Beast");
-    res.set(http::field::content_type, "application/json");
-
-    if (request_.method() == http::verb::post && request_.target() == "/hook")
+    if (request_.method() != http::verb::post || request_.target() != "/hook")
     {
-        try
-        {
-            boost::json::value jv = boost::json::parse(request_.body());
-
-            std::string streamName = jv.at("stream").as_string().c_str();
-
-            std::string paramString = jv.at("param").as_string().c_str();
-
-            std::string authToken = extract_param(paramString, "auth_token");
-            std::string clientId = extract_param(paramString, "client_id");
-
-            bool is_authenticated = AuthManager::instance().authenticate(streamName, clientId, authToken);
-
-            LOG_INFO("Param string: "+paramString);
-            LOG_INFO("Extracted auth_token: "+authToken);
-            LOG_INFO("Extracted client_id: "+clientId);
-            LOG_INFO("StreamName: " +streamName+ ", clientId: "+clientId);
-
-            if (is_authenticated)
-            {
-                res.result(http::status::ok);
-                res.body() = R"({"code":0,"msg":"success"})";
-            }
-            else
-            {
-                res.result(http::status::forbidden);
-                res.body() = R"({"code":1,"msg":"authentication failed"})";
-            }
-        }
-        catch (const boost::json::system_error& e)
-        {
-            LOG_ERROR("JSON Parsing Error (400): "+e.code().message());
-            res.result(http::status::bad_request);
-            res.body() = R"({"code":2,"msg":"invalid json format or syntax error"})";
-        }
-        catch (const std::out_of_range& e)
-        {
-            LOG_ERROR("JSON Key Missing Error (400): "+std::string(e.what()));
-            res.result(http::status::bad_request);
-            res.body() = R"({"code":3,"msg":"missing required key"})";
-        }
-        catch (const std::exception& e)
-        {
-            LOG_ERROR("Internal Server Error (500) during auth: "+std::string(e.what()));
-            res.result(http::status::internal_server_error);
-            res.body() = R"({"code":4,"msg":"internal server error"})";
-        }
-    }
-    else
-    {
-        res.result(http::status::not_found);
-        res.body() = "The requested resource was not found.";
+        this->send_response(404, 999, "The requested resource was not found.");
+        return;
     }
 
-    res.prepare_payload();
+    std::string streamName, paramString, authToken, clientId;
+    try
+    {
+        LOG_INFO("Body size = " + std::to_string(request_.body().size()));
+        LOG_INFO("Body = " + request_.body());
 
-    do_write(std::move(res));
+        boost::json::value jv = boost::json::parse(request_.body());
+
+        auto& obj = jv.as_object();
+
+        streamName = boost::json::value_to<std::string>(obj.at("streamKey"));
+        clientId = boost::json::value_to<std::string>(obj.at("clientId"));
+        authToken = boost::json::value_to<std::string>(obj.at("authToken"));
+    }
+    catch (const boost::json::system_error& e)
+    {
+        LOG_ERROR("JSON Parsing Error (400): "+e.code().message());
+        this->send_response(400, 2, "invalid json format or syntax error");
+        return;
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR("Parameter extraction failed (400): "+std::string(e.what()));
+        this->send_response(400, 3, "missing required key or invalid param");
+        return;
+    }
+
+    LOG_INFO("Param string: "+paramString);
+    LOG_INFO("Extracted auth_token: "+authToken);
+    LOG_INFO("Extracted client_id: "+clientId);
+    LOG_INFO("StreamName: " +streamName+ ", clientId: "+clientId);
+
+    AuthCallback response_callback = [self = shared_from_this()](int final_auth_code)
+    {
+        int http_status = 403;
+        int business_code = 1;
+        std::string message = "authentication failed";
+
+        if (final_auth_code == AuthError::SUCCESS)
+        {
+            http_status = 200;
+            business_code = 0;
+            message = "success";
+        }
+        else if (final_auth_code == AuthError::RUNTIME_ERROR || final_auth_code == AuthError::DB_ERROR)
+        {
+            http_status = 500;
+            business_code = 4;
+            message = "internal server error during auth";
+        }
+        else if (final_auth_code == AuthError::CACHE_AUTH_FAIL || final_auth_code == AuthError::DB_AUTH_FAIL)
+        {
+            http_status = 403;
+            business_code = 1;
+            message = "authentication failed";
+        }
+
+        boost::asio::post(self->socket_.get_executor(),
+                          [self,http_status,business_code,message]()
+                          {
+                              self->send_response(http_status, business_code, message);
+                          });
+    };
+
+    AuthManager::instance().performCheckAsync(
+        streamName,
+        clientId,
+        authToken,
+        response_callback);
 }
+
 
 void HookSession::do_write(http::message_generator&& msg)
 {
@@ -159,7 +170,6 @@ void HookSession::on_write(bool keep_alive, beast::error_code ec, std::size_t by
         }
     }
 }
-
 
 StreamGateListener::StreamGateListener(net::io_context& ioc, const tcp::endpoint& endpoint) : ioc_(ioc), acceptor_(ioc)
 {
@@ -215,83 +225,116 @@ void StreamGateListener::do_accept()
         );
 }
 
-void StreamGateServer::initialize()
+StreamGateServer::StreamGateServer(const std::string& address, int port, int io_threads)
+    : ioc_()
 {
-    LOG_INFO("--- StreamGate Server Initialization ---");
+    LOG_INFO("Server: Initializing I/O context and Listener.");
 
-    try
-    {
-        ConfigLoader::instance().load(".env");
+    auto const endpoint = net::ip::tcp::endpoint{
+        net::ip::make_address(address),
+        static_cast<unsigned short>(port)
+    };
 
-        LOG_INFO("Initialization complete.");
-    }
-    catch (const std::exception& e)
-    {
-        LOG_FATAL("FATAL Initialization Error: " +std::string(e.what()));
-        throw;
-    }
+    listener_ = std::make_shared<StreamGateListener>(ioc_, endpoint);
+
+    listener_->run();
+
+    start_service(io_threads);
 }
 
-void StreamGateServer::start_service()
+
+void StreamGateServer::start_service(int io_threads)
 {
-    ioc_.run();
+    work_guard_.emplace(net::make_work_guard(ioc_));
+
+    for (int i = 0; i < io_threads; ++i)
+    {
+        io_threads_pool_.emplace_back(
+            [this]
+            {
+                ioc_.run();
+            });
+    }
+
+    LOG_INFO("Server: Started "+std::to_string(io_threads)+ " I/O worker threads.");
 }
 
 void StreamGateServer::run()
 {
-    initialize();
+    LOG_INFO("StreamGate Server is running. Press Ctrl+C to stop...");
 
-    int port = ConfigLoader::instance().getInt("HOOK_SERVER_PORT");
-    std::string address = ConfigLoader::instance().getString("SERVER_ADDRESS");
-
-    auto const listen_address = net::ip::make_address(address);
-    tcp::endpoint endpoint{listen_address, static_cast<unsigned short>(port)};
-
-    std::make_shared<StreamGateListener>(ioc_, endpoint)->run();
-
-    int num_threads = ConfigLoader::instance().getInt("SERVER_MAX_THREADS", 4);
-    std::vector<std::thread> threads;
-
-    if (num_threads < 1)
-        num_threads = 1;
-
-    for (int i = 0; i < num_threads - 1; ++i)
-    {
-        threads.emplace_back([this]
-        {
-            start_service();
-        });
-    }
-
-    LOG_INFO(
-        "Starting IO service on "+address+":"+std::to_string(port)+" with "+std::to_string(num_threads)+ " threads...");
-    start_service();
-
-    for (auto& t : threads)
+    for (auto& t : io_threads_pool_)
     {
         if (t.joinable())
         {
             t.join();
         }
     }
+    LOG_INFO("StreamGate Server I/O threads finished.");
+}
 
-    LOG_INFO("--- StreamGate Server shutdown complete ---");
+void HookSession::send_response(int http_status, int business_code, const std::string& message)
+{
+    using response_type = http::response<http::string_body>;
+    response_type res;
+
+    res.set(http::field::server, "StreamGate-Beast");
+    res.set(http::field::content_type, "application/json");
+
+    res.result(static_cast<http::status>(http_status));
+
+    std::string json_body = "{\"code\":" + std::to_string(business_code) + ",\"msg\":\"" + message + "\"}";
+
+    res.body() = json_body;
+
+    res.prepare_payload();
+
+    do_write(std::move(res));
+}
+
+StreamGateServer::~StreamGateServer()
+{
+    if (work_guard_.has_value())
+    {
+        work_guard_.reset();
+    }
+
+    ioc_.stop();
+
+    for (auto& t : io_threads_pool_)
+    {
+        if (t.joinable())
+        {
+            t.join();
+        }
+    }
+}
+
+void StreamGateListener::stop()
+{
+    boost::system::error_code ec;
+    if (acceptor_.is_open())
+        acceptor_.close(ec);
 }
 
 
-std::string HookSession::extract_param(const std::string& paramString, const std::string& key)
+void StreamGateServer::stop()
 {
-    std::string search_key = key + "=";
-    size_t start_pos = paramString.find(search_key);
+    if (listener_)
+    {
+        listener_->stop();
+        listener_.reset();
+    }
 
-    if (start_pos == std::string::npos)
-        return "";
+    work_guard_.reset();
+    ioc_.stop();
 
-    start_pos += search_key.length();
+    for (auto& th : io_threads_pool_)
+    {
+        if (th.joinable())
+            th.join();
+    }
+    io_threads_pool_.clear();
 
-    size_t end_pos = paramString.find('&', start_pos);
-    if (end_pos == std::string::npos)
-        return paramString.substr(start_pos);
-
-    return paramString.substr(start_pos, end_pos - start_pos);
+    std::cout << "[INFO] StreamGate Server I/O threads finished." << std::endl;
 }
