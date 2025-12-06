@@ -67,7 +67,7 @@ bool AuthManager::parseBody(const std::string& body,
 
         return true;
     }
-    catch (const boost::json::system_error& e)
+    catch (const boost::system::system_error& e)
     {
         LOG_ERROR("AuthManager: JSON parse error: " +std::string(e.what()));
         return false;

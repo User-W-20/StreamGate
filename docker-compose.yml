@@ -1,0 +1,38 @@
+version: '3.8'
+services:
+  hookserver:
+    build: .
+    container_name: hookserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - mysql
+      - srs
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+  mysql:
+    image: mysql:8
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: streamgate
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3306:3306"
+
+  srs:
+    image: ossrs/srs:5
+    container_name: srs
+    ports:
+      - "1935:1935"   # RTMP
+      - "1985:1985"   # HTTP API
+      - "8088:8088"   # HTTP Live
+    volumes:
+      - ./srs_conf:/usr/local/srs/conf  # 可挂载 SRS 配置文件

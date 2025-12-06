@@ -1,0 +1,86 @@
+[
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -I/home/wxx/projects/StreamGate/src/../include -I/usr/include/mariadb -std=gnu++17 -o CMakeFiles/streamgate_hook_server.dir/main/HookServer.cpp.o -c /home/wxx/projects/StreamGate/src/main/HookServer.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/main/HookServer.cpp",
+  "output": "src/CMakeFiles/streamgate_hook_server.dir/main/HookServer.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -I/home/wxx/projects/StreamGate/src/../include -I/usr/include/mariadb -std=gnu++17 -o CMakeFiles/streamgate_hook_server.dir/main/main.cpp.o -c /home/wxx/projects/StreamGate/src/main/main.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/main/main.cpp",
+  "output": "src/CMakeFiles/streamgate_hook_server.dir/main/main.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -I/home/wxx/projects/StreamGate/src/../include -I/usr/include/mariadb -std=gnu++17 -o CMakeFiles/streamgate_hook_server.dir/auth/AuthManager.cpp.o -c /home/wxx/projects/StreamGate/src/auth/AuthManager.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/auth/AuthManager.cpp",
+  "output": "src/CMakeFiles/streamgate_hook_server.dir/auth/AuthManager.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -I/home/wxx/projects/StreamGate/src/../include -I/usr/include/mariadb -std=gnu++17 -o CMakeFiles/streamgate_hook_server.dir/cache/CacheManager.cpp.o -c /home/wxx/projects/StreamGate/src/cache/CacheManager.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/cache/CacheManager.cpp",
+  "output": "src/CMakeFiles/streamgate_hook_server.dir/cache/CacheManager.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -I/home/wxx/projects/StreamGate/src/../include -I/usr/include/mariadb -std=gnu++17 -o CMakeFiles/streamgate_hook_server.dir/db/DBManager.cpp.o -c /home/wxx/projects/StreamGate/src/db/DBManager.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/db/DBManager.cpp",
+  "output": "src/CMakeFiles/streamgate_hook_server.dir/db/DBManager.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -I/home/wxx/projects/StreamGate/src/../include -I/usr/include/mariadb -std=gnu++17 -o CMakeFiles/streamgate_hook_server.dir/util/ConfigLoader.cpp.o -c /home/wxx/projects/StreamGate/src/util/ConfigLoader.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/util/ConfigLoader.cpp",
+  "output": "src/CMakeFiles/streamgate_hook_server.dir/util/ConfigLoader.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -I/home/wxx/projects/StreamGate/src/../include -I/usr/include/mariadb -std=gnu++17 -o CMakeFiles/streamgate_hook_server.dir/util/Logger.cpp.o -c /home/wxx/projects/StreamGate/src/util/Logger.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/util/Logger.cpp",
+  "output": "src/CMakeFiles/streamgate_hook_server.dir/util/Logger.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -std=gnu++17 -o CMakeFiles/test01.dir/test/test_auth.cpp.o -c /home/wxx/projects/StreamGate/src/test/test_auth.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/test/test_auth.cpp",
+  "output": "src/CMakeFiles/test01.dir/test/test_auth.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -std=gnu++17 -o CMakeFiles/test01.dir/main/HookServer.cpp.o -c /home/wxx/projects/StreamGate/src/main/HookServer.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/main/HookServer.cpp",
+  "output": "src/CMakeFiles/test01.dir/main/HookServer.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -std=gnu++17 -o CMakeFiles/test01.dir/auth/AuthManager.cpp.o -c /home/wxx/projects/StreamGate/src/auth/AuthManager.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/auth/AuthManager.cpp",
+  "output": "src/CMakeFiles/test01.dir/auth/AuthManager.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -std=gnu++17 -o CMakeFiles/test01.dir/cache/CacheManager.cpp.o -c /home/wxx/projects/StreamGate/src/cache/CacheManager.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/cache/CacheManager.cpp",
+  "output": "src/CMakeFiles/test01.dir/cache/CacheManager.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -std=gnu++17 -o CMakeFiles/test01.dir/db/DBManager.cpp.o -c /home/wxx/projects/StreamGate/src/db/DBManager.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/db/DBManager.cpp",
+  "output": "src/CMakeFiles/test01.dir/db/DBManager.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -std=gnu++17 -o CMakeFiles/test01.dir/util/ConfigLoader.cpp.o -c /home/wxx/projects/StreamGate/src/util/ConfigLoader.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/util/ConfigLoader.cpp",
+  "output": "src/CMakeFiles/test01.dir/util/ConfigLoader.cpp.o"
+},
+{
+  "directory": "/home/wxx/projects/StreamGate/build/src",
+  "command": "/usr/bin/c++ -DBOOST_CONTAINER_DYN_LINK -DBOOST_CONTAINER_NO_LIB -DBOOST_JSON_DYN_LINK -DBOOST_JSON_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -I/home/wxx/projects/StreamGate/include -I/usr/local/include/cpp_redis -std=gnu++17 -o CMakeFiles/test01.dir/util/Logger.cpp.o -c /home/wxx/projects/StreamGate/src/util/Logger.cpp",
+  "file": "/home/wxx/projects/StreamGate/src/util/Logger.cpp",
+  "output": "src/CMakeFiles/test01.dir/util/Logger.cpp.o"
+}
+]

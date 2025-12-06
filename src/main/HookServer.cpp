@@ -7,6 +7,7 @@
 #include <iostream>
 #include <thread>
 #include <boost/json.hpp>
+#include <boost/system/error_code.hpp>
 #include <boost/lexical_cast.hpp>
 
 #include <iostream>
@@ -76,7 +77,7 @@ void HookSession::handle_request()
         clientId = boost::json::value_to<std::string>(obj.at("clientId"));
         authToken = boost::json::value_to<std::string>(obj.at("authToken"));
     }
-    catch (const boost::json::system_error& e)
+    catch (const boost::system::system_error& e)
     {
         LOG_ERROR("JSON Parsing Error (400): "+e.code().message());
         this->send_response(400, 2, "invalid json format or syntax error");

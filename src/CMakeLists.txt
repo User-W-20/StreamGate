@@ -1,4 +1,6 @@
-find_package(Boost 1.83.0 REQUIRED COMPONENTS system json)
+find_package(Boost 1.89 REQUIRED COMPONENTS json)
+
+
 find_package(PkgConfig REQUIRED)
 
 find_package(GTest REQUIRED)
@@ -12,11 +14,11 @@ pkg_check_modules(CPP_REDIS REQUIRED cpp_redis)
 # MariaDB Connector/C++
 # ============================
 find_library(MARIADB_CPP mariadbcpp
-        HINTS /usr/lib /usr/lib/x86_64-linux-gnu
+        HINTS /usr/lib64/mariadb /usr/local/lib64/mariadb
 )
 
 find_library(MARIADB_CLIENT mariadb
-        HINTS /usr/lib /usr/lib/x86_64-linux-gnu
+        HINTS /usr/lib64/mariadb /usr/local/lib64/mariadb
 )
 
 if (NOT MARIADB_CPP)
@@ -53,6 +55,10 @@ set(TEST_SOURCES
         util/Logger.cpp
 )
 
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+
+
 add_executable(streamgate_hook_server ${SOURCES})
 
 add_executable(test01 ${TEST_SOURCES})
@@ -65,7 +71,6 @@ target_include_directories(streamgate_hook_server PRIVATE
 
 target_link_libraries(streamgate_hook_server PRIVATE
         pthread
-        Boost::system
         Boost::json
 
         # MariaDB C++ Connector
@@ -79,7 +84,6 @@ target_link_libraries(streamgate_hook_server PRIVATE
 
 target_link_libraries(test01 PRIVATE
         pthread
-        Boost::system
         Boost::json
 
         # MariaDB C++ Connector
