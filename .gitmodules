@@ -1,5 +1,6 @@
 [submodule "cpp_redis"]
-
-    path = cpp_redis
-
-    url = git@github.com:cpp-redis/cpp_redis.git
+	path = cpp_redis
+	url = git@github.com:cpp-redis/cpp_redis.git
+[submodule "srs"]
+	path = srs
+	url = git@github.com:ossrs/srs.git
