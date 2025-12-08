@@ -21,6 +21,8 @@ public:
     explicit ThreadPool(size_t threads);
     ~ThreadPool();
 
+    void stop_and_wait();
+
     template <class F, class... Args>
     auto submit(F&& f, Args&&... args) -> std::future<std::invoke_result_t<F, Args...>>
     {
@@ -31,6 +33,7 @@ public:
             );
 
         std::future<return_type> res = task->get_future();
+
         {
             std::unique_lock<std::mutex> lock(queue_mutex);
             if (stop)
@@ -51,7 +54,8 @@ private:
 
     std::mutex queue_mutex;
     std::condition_variable condition;
-    bool stop;
+
+    std::atomic<bool> stop{false};
 };
 
 class DBManager
@@ -80,7 +84,7 @@ public:
 
 private:
     DBManager();
-    ~DBManager() = default;
+    ~DBManager();
 
 private:
     sql::Driver* _dirver;

@@ -21,6 +21,13 @@ namespace AuthError
     constexpr int RUNTIME_ERROR = 500;
 }
 
+struct HookParams
+{
+    std::string streamKey;
+    std::string clientId;
+    std::string authToken;
+};
+
 class AuthManager
 {
 public:
@@ -29,10 +36,7 @@ public:
     AuthManager(const AuthManager&) = delete;
     AuthManager& operator=(const AuthManager&) = delete;
 
-    void performCheckAsync(const std::string& streamName,
-                           const std::string& clientId,
-                           const std::string& authToken,
-                           AuthCallback callback);
+    void performCheckAsync(const HookParams& params, AuthCallback callback);
 
 private:
     AuthManager();

@@ -3,6 +3,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <algorithm>
+#include <thread>
+#include <functional>
 #include <boost/lexical_cast.hpp>
 #include "ConfigLoader.h"
 #include "Logger.h"
@@ -46,9 +48,9 @@ CacheManager::~CacheManager()
 
 void CacheManager::start_io_loop()
 {
-    ConfigLoader& config=ConfigLoader::instance();
+    ConfigLoader& config = ConfigLoader::instance();
 
-    const size_t thread_count=config.getInt("REDIS_IO_THREADS",2);
+    const size_t thread_count = config.getInt("REDIS_IO_THREADS", 2);
 
     _work_guard = std::make_unique<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(
         boost::asio::make_work_guard(_io_context));
@@ -74,7 +76,7 @@ void CacheManager::start_io_loop()
     {
         const std::string host = ConfigLoader::instance().getString("REDIS_HOST");
         const int port = ConfigLoader::instance().getInt("REDIS_PORT");
-        _cacheTTL = config.getInt("CACHE_TTL_SECONDS",300);
+        _cacheTTL = config.getInt("CACHE_TTL_SECONDS", 300);
 
         _client->connect(host,
                          port,
@@ -191,6 +193,15 @@ void CacheManager::performSyncSet(const std::string& key, int result)
 
 std::future<int> CacheManager::getAuthResult(const std::string& streamKey, const std::string& clientId)
 {
+    if (! is_ready())
+    {
+        LOG_WARN("CacheManager Warning: Redis service is DOWN or not ready. Reporting CACHE_MISS.");
+
+        std::promise<int> p;
+        p.set_value(CACHE_MISS);
+        return p.get_future();
+    }
+
     std::string key = buildKey(streamKey, clientId);
 
     return DBManager::instance().getThreadPool().submit(
@@ -225,4 +236,94 @@ void CacheManager::setAuthResult(const std::string& cacheKey, int result)
         this,
         cacheKey,
         result);
+}
+
+bool CacheManager::is_ready() const
+{
+    if (! _io_threads_running || ! _is_initialized)
+    {
+        return false;
+    }
+
+    if (! _client)
+    {
+        return false;
+    }
+
+    return _client->is_connected();
+}
+
+
+void CacheManager::force_disconnect()
+{
+    if (! _client)
+        return;
+
+    LOG_WARN("CacheManager: Forcing synchronous disconnect and stopping I/O context.");
+
+    if (_client && _client->is_connected())
+    {
+        _client->disconnect(true);
+    }
+
+    if (_work_guard)
+    {
+        _work_guard.reset();
+    }
+
+    _io_context.stop();
+
+    for (auto& t : _io_threads)
+    {
+        if (t.joinable())
+        {
+            LOG_WARN("CacheManager: Joining I/O thread...");
+            t.join();
+        }
+    }
+
+    _io_threads.clear();
+
+    LOG_INFO("CacheManager: Disconnect completed. I/O threads stopped.");
+}
+
+void CacheManager::reconnect()
+{
+    if (! _client)
+        return;
+
+    LOG_INFO("CacheManager: Attempting to forcibly restart I/O loop and reconnect client.");
+
+    instance().start_io_loop();
+
+    try
+    {
+        const std::string host = ConfigLoader::instance().getString("REDIS_HOST");
+        const int port = ConfigLoader::instance().getInt("REDIS_PORT");
+
+        _client->connect(host,
+                         port,
+                         [this](const std::string& h, size_t p, cpp_redis::client::connect_state status)
+                         {
+                             if (status == cpp_redis::client::connect_state::dropped)
+                             {
+                                 LOG_WARN("Redis connection dropped. Reconnecting...");
+                                 try
+                                 {
+                                     _client->connect(h, p, nullptr);
+                                 }
+                                 catch (...)
+                                 {
+                                 }
+                             }
+                         });
+
+        _client->sync_commit(std::chrono::milliseconds(500));
+
+        LOG_INFO("CacheManager: Reconnection successful.");
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR("CacheManager: Reconnection failed: " + std::string(e.what()));
+    }
 }

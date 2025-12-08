@@ -45,7 +45,7 @@ ThreadPool::ThreadPool(size_t threads) : stop(false)
     }
 }
 
-ThreadPool::~ThreadPool()
+void ThreadPool::stop_and_wait()
 {
     {
         std::unique_lock<std::mutex> lock(queue_mutex);
@@ -53,13 +53,16 @@ ThreadPool::~ThreadPool()
     }
 
     condition.notify_all();
+
     for (std::thread& worker : workers)
-    {
         if (worker.joinable())
-        {
             worker.join();
-        }
-    }
+}
+
+
+ThreadPool::~ThreadPool()
+{
+    stop_and_wait();
 }
 
 DBManager::DBManager() : _dirver(sql::mariadb::get_driver_instance()),
@@ -67,6 +70,45 @@ DBManager::DBManager() : _dirver(sql::mariadb::get_driver_instance()),
                              std::make_unique<ThreadPool>(ConfigLoader::instance().getInt("SERVER_MAX_THREADS", 4)))
 {
 }
+
+DBManager::~DBManager()
+{
+    if (_threadPool)
+    {
+        LOG_INFO("DBManager: Starting graceful ThreadPool shutdown...");
+
+        _threadPool->stop_and_wait();
+
+        LOG_INFO("DBManager: ThreadPool successfully stopped and joined.");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(_connectionMutex);
+
+        LOG_INFO("DBManager: Closing all database connections in the pool...");
+
+        while (! _connectionPool.empty())
+        {
+            std::unique_ptr<sql::Connection> conn = std::move(_connectionPool.front());
+            _connectionPool.pop();
+
+            if (conn)
+            {
+                try
+                {
+                    conn->close();
+                }
+                catch (const sql::SQLException& e)
+                {
+                    LOG_WARN("DBManager: Error closing DB connection: " +std::string(e.what()));
+                }
+            }
+        }
+    }
+
+    LOG_INFO("DBManager: All MariaDB connections closed.");
+}
+
 
 DBManager& DBManager::instance()
 {

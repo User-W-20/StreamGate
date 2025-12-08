@@ -79,16 +79,16 @@ bool AuthManager::parseBody(const std::string& body,
     }
 }
 
-void AuthManager::performCheckAsync(const std::string& streamName,
-                                    const std::string& clientId,
-                                    const std::string& authToken,
+void AuthManager::performCheckAsync(const HookParams& params,
                                     AuthCallback callback)
 {
     ThreadPool& shared_pool = DBManager::instance().getThreadPool();
 
-    shared_pool.submit([this,streamName,clientId,authToken,callback]()
+    auto start_auth_check = [this,params,callback]()
     {
-        int final_result_code = AuthError::DB_AUTH_FAIL;
+        const std::string& streamName = params.streamKey;
+        const std::string& clientId = params.clientId;
+        const std::string& authToken = params.authToken;
 
         try
         {
@@ -117,8 +117,11 @@ void AuthManager::performCheckAsync(const std::string& streamName,
             {
                 LOG_WARN("AuthManager Warning: Cache service error. Falling back to DB.");
             }
+
             std::future<int> db_future = DBManager::instance().asyncCheckStream(streamName, clientId, authToken);
             int db_result = db_future.get();
+
+            int final_result_code = AuthError::DB_AUTH_FAIL;;
 
             if (db_result == 1)
             {
@@ -145,5 +148,7 @@ void AuthManager::performCheckAsync(const std::string& streamName,
             LOG_FATAL("AuthManager FATAL Error in Shared Worker thread: "+std::string(e.what())+". Fail Closed.");
             callback(AuthError::RUNTIME_ERROR);
         }
-    });
+    };
+
+    shared_pool.submit(start_auth_check);
 }

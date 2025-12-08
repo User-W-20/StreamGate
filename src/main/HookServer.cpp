@@ -63,7 +63,8 @@ void HookSession::handle_request()
         return;
     }
 
-    std::string streamName, paramString, authToken, clientId;
+    HookParams params;
+
     try
     {
         LOG_INFO("Body size = " + std::to_string(request_.body().size()));
@@ -73,9 +74,9 @@ void HookSession::handle_request()
 
         auto& obj = jv.as_object();
 
-        streamName = boost::json::value_to<std::string>(obj.at("streamKey"));
-        clientId = boost::json::value_to<std::string>(obj.at("clientId"));
-        authToken = boost::json::value_to<std::string>(obj.at("authToken"));
+        params.streamKey = boost::json::value_to<std::string>(obj.at("streamKey"));
+        params.clientId = boost::json::value_to<std::string>(obj.at("clientId"));
+        params.authToken = boost::json::value_to<std::string>(obj.at("authToken"));
     }
     catch (const boost::system::system_error& e)
     {
@@ -90,10 +91,9 @@ void HookSession::handle_request()
         return;
     }
 
-    LOG_INFO("Param string: "+paramString);
-    LOG_INFO("Extracted auth_token: "+authToken);
-    LOG_INFO("Extracted client_id: "+clientId);
-    LOG_INFO("StreamName: " +streamName+ ", clientId: "+clientId);
+    LOG_INFO("Extracted auth_token: "+params.authToken);
+    LOG_INFO("Extracted client_id: "+params.clientId);
+    LOG_INFO("StreamName: " +params.streamKey+ ", clientId: "+params.clientId);
 
     AuthCallback response_callback = [self = shared_from_this()](int final_auth_code)
     {
@@ -120,7 +120,7 @@ void HookSession::handle_request()
             message = "authentication failed";
         }
 
-        boost::asio::post(self->socket_.get_executor(),
+        boost::asio::post(self->strand_,
                           [self,http_status,business_code,message]()
                           {
                               self->send_response(http_status, business_code, message);
@@ -128,9 +128,7 @@ void HookSession::handle_request()
     };
 
     AuthManager::instance().performCheckAsync(
-        streamName,
-        clientId,
-        authToken,
+        params,
         response_callback);
 }
 

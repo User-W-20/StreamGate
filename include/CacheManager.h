@@ -36,6 +36,10 @@ public:
     CacheManager(const CacheManager&) = delete;
     CacheManager& operator=(const CacheManager&) = delete;
 
+    void force_disconnect();
+
+    void reconnect();
+
 private:
     CacheManager();
     ~CacheManager();
@@ -45,6 +49,11 @@ private:
     int _cacheTTL = 300;
 
     [[nodiscard]] static std::string buildKey(const std::string& streamKey, const std::string& clientId);
+
+    bool _is_initialized=false;
+    bool _io_threads_running=false;
+
+    [[nodiscard]] bool is_ready() const;
 
     int performSyncGet(const std::string& key);
     void performSyncSet(const std::string& key, int result);
