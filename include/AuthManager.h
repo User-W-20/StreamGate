@@ -9,15 +9,15 @@
 #include <stdexcept>
 #include <functional>
 #include "boost/json.hpp"
+#include "IAuthRepository.h"
+#include "ThreadPool.h"
 
 using AuthCallback = std::function<void(int final_auth_code)>;
 
 namespace AuthError
 {
     constexpr int SUCCESS = 0;
-    constexpr int CACHE_AUTH_FAIL = 100;
-    constexpr int DB_AUTH_FAIL = 200;
-    constexpr int DB_ERROR = 201;
+    constexpr int AUTH_DENIED = 403;
     constexpr int RUNTIME_ERROR = 500;
 }
 
@@ -31,7 +31,8 @@ struct HookParams
 class AuthManager
 {
 public:
-    static AuthManager& instance();
+    AuthManager(std::unique_ptr<IAuthRepository> repository, ThreadPool& sharedPool);
+    ~AuthManager() = default;
 
     AuthManager(const AuthManager&) = delete;
     AuthManager& operator=(const AuthManager&) = delete;
@@ -39,8 +40,9 @@ public:
     void performCheckAsync(const HookParams& params, AuthCallback callback);
 
 private:
-    AuthManager();
-    ~AuthManager() = default;
+    std::unique_ptr<IAuthRepository> _repository;
+
+    ThreadPool& _sharedPool;
 
     static bool parseBody(const std::string& body,
                           std::string& streamName,

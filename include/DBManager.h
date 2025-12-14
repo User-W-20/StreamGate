@@ -12,51 +12,10 @@
 #include <mutex>
 #include <condition_variable>
 #include <functional>
-
+#include <optional>
+#include "StreamAuthData.h"
+#include "ThreadPool.h"
 #include <mariadb/conncpp.hpp>
-
-class ThreadPool
-{
-public:
-    explicit ThreadPool(size_t threads);
-    ~ThreadPool();
-
-    void stop_and_wait();
-
-    template <class F, class... Args>
-    auto submit(F&& f, Args&&... args) -> std::future<std::invoke_result_t<F, Args...>>
-    {
-        using return_type = std::invoke_result_t<F, Args...>;
-
-        auto task = std::make_shared<std::packaged_task<return_type()>>(
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
-            );
-
-        std::future<return_type> res = task->get_future();
-
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            if (stop)
-                throw std::runtime_error("submit on stopped ThreadPool");
-
-            tasks.emplace([task]()
-            {
-                (*task)();
-            });
-        }
-        condition.notify_one();
-        return res;
-    }
-
-private:
-    std::vector<std::thread> workers;
-    std::queue<std::function<void()>> tasks;
-
-    std::mutex queue_mutex;
-    std::condition_variable condition;
-
-    std::atomic<bool> stop{false};
-};
 
 class DBManager
 {
@@ -82,6 +41,10 @@ public:
                            const std::string& client,
                            const std::string& token);
 
+    std::optional<StreamAuthData> getAuthDataFromDB(const std::string& streamKey,
+                                                    const std::string& clientId,
+                                                    const std::string& authToken);
+
 private:
     DBManager();
     ~DBManager();
@@ -92,7 +55,7 @@ private:
     std::mutex _connectionMutex;
     std::queue<std::unique_ptr<sql::Connection>> _connectionPool;
 
-    std::unique_ptr<ThreadPool> _threadPool;
+     std::unique_ptr<ThreadPool> _threadPool;
 
     std::unique_ptr<sql::Connection> getConnection();
     void releaseConnection(std::unique_ptr<sql::Connection> conn);

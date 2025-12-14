@@ -327,3 +327,144 @@ void CacheManager::reconnect()
         LOG_ERROR("CacheManager: Reconnection failed: " + std::string(e.what()));
     }
 }
+
+std::optional<StreamAuthData> CacheManager::getAuthDataFromCache(const std::string& streamKey)
+{
+    if (! is_ready())
+    {
+        LOG_WARN("CacheManager Warning: Redis service is DOWN or not ready. Reporting CACHE_MISS.");
+        return std::nullopt;
+    }
+
+    std::string key = buildKey(streamKey, "");
+
+    auto serializedData = performSyncGetString(key);
+
+    if (serializedData.has_value())
+    {
+        return StreamAuthData::deserialize(serializedData.value());
+    }
+
+    return std::nullopt;
+}
+
+void CacheManager::setAuthDataToCache(const StreamAuthData& data, int ttl)
+{
+    if (! is_ready())
+    {
+        LOG_WARN("CacheManager Warning: Redis service is DOWN or not ready. Skipping cache write.");
+        return;
+    }
+
+    std::string serializedData = data.serialize();
+
+    if (serializedData.empty())
+    {
+        LOG_ERROR("CacheManager: Failed to serialize StreamAuthData.");
+        return;
+    }
+
+    std::string key = buildKey(data.streamKey, "");
+
+    performSyncSetString(key, serializedData, ttl);
+}
+
+std::optional<std::string> CacheManager::performSyncGetString(const std::string& key)
+{
+    std::lock_guard<std::mutex> lock(_client_mutex);
+
+    if (! _client || _client->is_connected())
+    {
+        LOG_WARN("CacheManager: Redis client is not connected when attempting sync GET for key: " + key);
+        return std::nullopt;
+    }
+
+    try
+    {
+        std::optional<std::string> result = std::nullopt;
+        bool commit_success = false;
+
+        _client->get(key,
+                     [&result,&commit_success,&key](cpp_redis::reply& reply)
+                     {
+                         if (reply.is_error())
+                         {
+                             LOG_ERROR("Redis GET Error for key " +key+ ": "+reply.as_string());
+                             commit_success = false;
+                         }
+                         else if (reply.is_null())
+                         {
+                             LOG_INFO("Redis GET: Key not found (NULL reply) for key: " +key);
+                             commit_success = true;
+                             result = std::nullopt;
+                         }
+                         else
+                         {
+                             result = reply.as_string();
+                             commit_success = true;
+                         }
+                     });
+
+        _client->sync_commit(std::chrono::milliseconds(500));
+
+        if (commit_success)
+        {
+            return result;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR("Redis GET Exception for key "+key+": " +e.what());
+        return std::nullopt;
+    }
+}
+
+void CacheManager::performSyncSetString(const std::string& key, const std::string& value, int ttl)
+{
+    std::lock_guard<std::mutex> lock(_client_mutex);
+
+    if (! _client || ! _client->is_connected())
+    {
+        LOG_WARN("CacheManager: Redis client is not connected when attempting sync SET for key: "+key);
+        return;
+    }
+
+    try
+    {
+        bool commit_success = false;
+
+        if (ttl > 0)
+        {
+            _client->setex(key,
+                           ttl,
+                           value,
+                           [&commit_success,&key](cpp_redis::reply& reply)
+                           {
+                               if (reply.is_error())
+                               {
+                                   LOG_ERROR("Redis SETEX Error for key " + key + ": " + reply.as_string());
+                                   commit_success = false;
+                               }
+                               else
+                               {
+                                   commit_success = true;
+                               }
+                           });
+        }
+
+        _client->sync_commit(std::chrono::milliseconds(500));
+
+        if (! commit_success)
+        {
+            LOG_WARN("Redis SET command failed or did not receive success reply for key: "+key);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR("Redis SET Exception (General) for key "+key+": " + e.what());
+    }
+}

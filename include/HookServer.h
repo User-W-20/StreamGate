@@ -18,6 +18,7 @@
 #include "DBManager.h"
 #include "ConfigLoader.h"
 
+
 namespace net = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -27,7 +28,7 @@ using tcp = net::ip::tcp;
 class HookSession : public std::enable_shared_from_this<HookSession>
 {
 public:
-    explicit HookSession(tcp::socket socket);
+    explicit HookSession(tcp::socket socket, AuthManager& authManager);
 
     void start();
 
@@ -51,6 +52,8 @@ private:
     http::request<http::string_body> request_; //存储解析后的http请求
 
     void send_response(int http_status, int business_code, const std::string& message);
+
+    AuthManager& _authManager;
 };
 
 //服务器监听类
@@ -59,7 +62,8 @@ class StreamGateListener : public std::enable_shared_from_this<StreamGateListene
 public:
     StreamGateListener(
         net::io_context& ioc,
-        const tcp::endpoint& endpoint
+        const tcp::endpoint& endpoint,
+        AuthManager& authManager
         );
 
     void run();
@@ -71,6 +75,7 @@ private:
 
     net::io_context& ioc_;
     tcp::acceptor acceptor_;
+    AuthManager& _authManager;
 };
 
 //服务器应用入口类
@@ -79,15 +84,15 @@ class StreamGateServer
 public:
     void run();
 
-    StreamGateServer(const std::string& address, int port, int io_threads);
+    StreamGateServer(const std::string& address, int port, int io_threads, AuthManager& authManager);
 
     ~StreamGateServer();
 
     void stop();
 
-private:
     void start_service(int io_threads);
 
+private:
     std::vector<std::thread> io_threads_pool_;
 
     std::optional<net::executor_work_guard<net::io_context::executor_type>> work_guard_;

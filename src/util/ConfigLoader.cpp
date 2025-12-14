@@ -54,8 +54,8 @@ void ConfigLoader::parseFile(const std::string& filename)
             std::string value = trim(line.substr(delimiterPos + 1));
 
             if (value.size() >= 2 &&
-                (value.front() == '"' && value.back() == '"') ||
-                (value.front() == '\'' && value.back() == '\''))
+                ((value.front() == '"' && value.back() == '"') ||
+                (value.front() == '\'' && value.back() == '\'')))
             {
                 value = value.substr(1, value.size() - 2);
             }

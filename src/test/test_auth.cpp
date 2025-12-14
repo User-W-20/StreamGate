@@ -4,6 +4,7 @@
 #include "DBManager.h"
 #include "ConfigLoader.h"
 #include "HookServer.h"
+#include "HybridAuthRepository.h"
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -57,10 +58,11 @@ protected:
     static constexpr const char* VALID_TOKEN = "valid_token_gtest";
     static constexpr const char* INVALID_STREAM = "test_stream_invalid_gtest";
 
-    // 静态成员用于在整个测试套件生命周期内管理服务器
-    static StreamGateServer* server_;
-    static std::thread server_thread_;
-    static std::atomic_bool server_started_;
+    // 所有共享资源都是 static + unique_ptr
+    static std::unique_ptr<StreamGateServer> server_;
+    static std::unique_ptr<HybridAuthRepository> repository_;
+    static std::unique_ptr<AuthManager> authManager_;
+    static std::atomic<bool> server_started_;
 
     static void SetUpTestSuite()
     {
@@ -109,41 +111,37 @@ protected:
     {
         std::cout << "\n--- TEST SETUP ---" << std::endl;
 
-        // 2. 初始化单例和连接
         ConfigLoader::instance().load("config/config.ini", ".env");
-        DBManager::instance().connect();
+        DBManager& dbMgr = DBManager::instance();
+        CacheManager& cacheMgr = CacheManager::instance();
 
-        // 关键点：每次 SetUp 都确保 CacheManager 的 I/O 循环启动 (处理重启逻辑)
-        CacheManager::instance().start_io_loop();
+        dbMgr.connect();
+        cacheMgr.start_io_loop();
         std::this_thread::sleep_for(1s);
 
-        // 3. 插入测试数据 (T01 依赖它)
-        DBManager::instance().insertAuthForTest(VALID_STREAM, VALID_CLIENT, VALID_TOKEN);
+        dbMgr.insertAuthForTest(VALID_STREAM, VALID_CLIENT, VALID_TOKEN);
 
-        // 4. 启动 server (仅启动一次)
-        if (! server_started_.load())
+        // 只启动一次服务器
+        if (!server_started_.load(std::memory_order_acquire))
         {
-            server_ = new StreamGateServer(TEST_ADDRESS, TEST_PORT, IO_THREADS);
-            server_thread_ = std::thread([]
-            {
-                try
-                {
-                    server_->run();
-                }
-                catch (const std::exception& e)
-                {
-                    std::cerr << "Server thread crashed: " << e.what() << std::endl;
-                }
-            });
-            std::this_thread::sleep_for(2s);
-            server_started_ = true;
+            ThreadPool& sharedPool = dbMgr.getThreadPool();
+
+            repository_ = std::make_unique<HybridAuthRepository>(dbMgr, cacheMgr);
+            authManager_ = std::make_unique<AuthManager>(std::move(repository_), sharedPool);
+
+            server_ = std::make_unique<StreamGateServer>(TEST_ADDRESS, TEST_PORT, IO_THREADS, *authManager_);
+
+            server_->start_service(IO_THREADS);
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+            server_started_.store(true, std::memory_order_release);
         }
     }
 
     void TearDown() override
     {
         std::cout << "\n--- TEST TEARDOWN ---" << std::endl;
-        // 关键点：确保 Redis 客户端在每次测试后关闭 I/O 线程，防止影响下一个测试
         CacheManager::instance().force_disconnect();
     }
 
@@ -151,27 +149,29 @@ protected:
     {
         std::cout << "\n--- TEARDOWN TEST SUITE ---" << std::endl;
 
-        if (server_started_.load())
+        if (server_started_.load(std::memory_order_acquire))
         {
-            // 1. 停止服务器对象
             if (server_)
             {
-                server_->stop();
+                server_->stop();      // 停止 acceptor + ioc_.stop() + join 所有 I/O threads
+                server_.reset();      // 自动释放内存
             }
 
-            // 2. 等待服务器 I/O 线程安全退出 (join)
-            if (server_thread_.joinable())
+            try
             {
-                server_thread_.join();
+                DBManager::instance().getThreadPool().stop_and_wait();
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << "Warning: Failed to stop ThreadPool: " << e.what() << std::endl;
             }
 
-            // 3. 释放裸指针内存
-            delete server_;
-            server_ = nullptr;
-            server_started_ = false;
+            authManager_.reset();
+            repository_.reset();
+
+            server_started_.store(false, std::memory_order_release);
         }
 
-        // 4. 停止外部服务 (只在整个套件结束后执行一次)
         toggle_service("mariadb", false);
         toggle_service("redis-server", false);
 
@@ -179,10 +179,11 @@ protected:
     }
 };
 
-// ---------------------- 静态成员初始化 ----------------------
-StreamGateServer* HookServerIntegrationTest::server_ = nullptr;
-std::thread HookServerIntegrationTest::server_thread_;
-std::atomic_bool HookServerIntegrationTest::server_started_ = false;
+// ---------------------- 静态成员定义（放在 cpp 文件中） ----------------------
+std::unique_ptr<StreamGateServer> HookServerIntegrationTest::server_;
+std::unique_ptr<HybridAuthRepository> HookServerIntegrationTest::repository_;
+std::unique_ptr<AuthManager> HookServerIntegrationTest::authManager_;
+std::atomic<bool> HookServerIntegrationTest::server_started_{false};
 
 // ---------------------- 测试 ----------------------
 

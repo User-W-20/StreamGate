@@ -11,6 +11,7 @@
 #include <cpp_redis/core/client.hpp>
 
 #include "HookServer.h"
+#include "StreamAuthData.h"
 
 enum CacheResult
 {
@@ -31,10 +32,18 @@ public:
     std::future<int> getAuthResult(const std::string& cacheKey);
     void setAuthResult(const std::string& cacheKey, int result);
 
+    std::optional<StreamAuthData> getAuthDataFromCache(const std::string& streamKey);
+    void setAuthDataToCache(const StreamAuthData& data, int ttl);
+
     void start_io_loop();
 
     CacheManager(const CacheManager&) = delete;
     CacheManager& operator=(const CacheManager&) = delete;
+
+    [[nodiscard]] int getTTL() const
+    {
+        return _cacheTTL;
+    }
 
     void force_disconnect();
 
@@ -46,17 +55,22 @@ private:
 
     std::unique_ptr<cpp_redis::client> _client;
 
+    std::mutex _client_mutex;
+
     int _cacheTTL = 300;
 
     [[nodiscard]] static std::string buildKey(const std::string& streamKey, const std::string& clientId);
 
-    bool _is_initialized=false;
-    bool _io_threads_running=false;
+    bool _is_initialized = false;
+    bool _io_threads_running = false;
 
     [[nodiscard]] bool is_ready() const;
 
     int performSyncGet(const std::string& key);
     void performSyncSet(const std::string& key, int result);
+
+    std::optional<std::string> performSyncGetString(const std::string& key);
+    void performSyncSetString(const std::string& key, const std::string& value, int ttl);
 
     boost::asio::io_context _io_context;
     std::unique_ptr<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>> _work_guard;

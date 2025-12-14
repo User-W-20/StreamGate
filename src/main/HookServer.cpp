@@ -13,7 +13,10 @@
 #include <iostream>
 #include <string>
 
-HookSession::HookSession(tcp::socket socket) : socket_(std::move(socket)), strand_(socket_.get_executor())
+HookSession::HookSession(tcp::socket socket, AuthManager& authManager)
+    : socket_(std::move(socket)),
+      strand_(socket_.get_executor()),
+      _authManager(authManager)
 {
 }
 
@@ -37,7 +40,7 @@ void HookSession::do_read()
         );
 }
 
-void HookSession::on_read(beast::error_code ec, std::size_t bytes_transferred)
+void HookSession::on_read(beast::error_code ec,[[maybe_unused]] std::size_t bytes_transferred)
 {
     if (ec == http::error::end_of_stream)
     {
@@ -97,9 +100,9 @@ void HookSession::handle_request()
 
     AuthCallback response_callback = [self = shared_from_this()](int final_auth_code)
     {
-        int http_status = 403;
-        int business_code = 1;
-        std::string message = "authentication failed";
+        int http_status = 0;
+        int business_code = 0;
+        std::string message;
 
         if (final_auth_code == AuthError::SUCCESS)
         {
@@ -107,17 +110,17 @@ void HookSession::handle_request()
             business_code = 0;
             message = "success";
         }
-        else if (final_auth_code == AuthError::RUNTIME_ERROR || final_auth_code == AuthError::DB_ERROR)
-        {
-            http_status = 500;
-            business_code = 4;
-            message = "internal server error during auth";
-        }
-        else if (final_auth_code == AuthError::CACHE_AUTH_FAIL || final_auth_code == AuthError::DB_AUTH_FAIL)
+        else if (final_auth_code == AuthError::AUTH_DENIED)
         {
             http_status = 403;
             business_code = 1;
             message = "authentication failed";
+        }
+        else if (final_auth_code == AuthError::RUNTIME_ERROR)
+        {
+            http_status = 500;
+            business_code = 4;
+            message = "internal server error during auth";
         }
 
         boost::asio::post(self->strand_,
@@ -127,7 +130,8 @@ void HookSession::handle_request()
                           });
     };
 
-    AuthManager::instance().performCheckAsync(
+
+    _authManager.performCheckAsync(
         params,
         response_callback);
 }
@@ -147,7 +151,7 @@ void HookSession::do_write(http::message_generator&& msg)
         );
 }
 
-void HookSession::on_write(bool keep_alive, beast::error_code ec, std::size_t bytes_transferred)
+void HookSession::on_write(bool keep_alive, beast::error_code ec,[[maybe_unused]] std::size_t bytes_transferred)
 {
     if (ec)
     {
@@ -170,7 +174,10 @@ void HookSession::on_write(bool keep_alive, beast::error_code ec, std::size_t by
     }
 }
 
-StreamGateListener::StreamGateListener(net::io_context& ioc, const tcp::endpoint& endpoint) : ioc_(ioc), acceptor_(ioc)
+StreamGateListener::StreamGateListener(net::io_context& ioc, const tcp::endpoint& endpoint, AuthManager& authManager)
+    : ioc_(ioc),
+      acceptor_(ioc),
+      _authManager(authManager)
 {
     boost::system::error_code ec;
 
@@ -217,14 +224,14 @@ void StreamGateListener::do_accept()
             }
             else
             {
-                std::make_shared<HookSession>(std::move(socket))->start();
+                std::make_shared<HookSession>(std::move(socket), self->_authManager)->start();
             }
             self->do_accept();
         }
         );
 }
 
-StreamGateServer::StreamGateServer(const std::string& address, int port, int io_threads)
+StreamGateServer::StreamGateServer(const std::string& address, int port, int io_threads, AuthManager& authManager)
     : ioc_()
 {
     LOG_INFO("Server: Initializing I/O context and Listener.");
@@ -234,7 +241,7 @@ StreamGateServer::StreamGateServer(const std::string& address, int port, int io_
         static_cast<unsigned short>(port)
     };
 
-    listener_ = std::make_shared<StreamGateListener>(ioc_, endpoint);
+    listener_ = std::make_shared<StreamGateListener>(ioc_, endpoint, authManager);
 
     listener_->run();
 
@@ -260,16 +267,19 @@ void StreamGateServer::start_service(int io_threads)
 
 void StreamGateServer::run()
 {
+    start_service(std::thread::hardware_concurrency());
     LOG_INFO("StreamGate Server is running. Press Ctrl+C to stop...");
 
-    for (auto& t : io_threads_pool_)
-    {
-        if (t.joinable())
-        {
-            t.join();
-        }
-    }
-    LOG_INFO("StreamGate Server I/O threads finished.");
+    sigset_t sigset;
+    sigemptyset(&sigset);
+    sigaddset(&sigset,SIGINT);
+    sigaddset(&sigset,SIGTERM);
+    int sig;
+    sigwait(&sigset,&sig);
+
+
+    LOG_INFO("Received shutdown signal, stopping server...");
+    stop();
 }
 
 void HookSession::send_response(int http_status, int business_code, const std::string& message)

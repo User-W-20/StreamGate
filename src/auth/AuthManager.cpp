@@ -2,19 +2,19 @@
 // Created by X on 2025/11/16.
 //
 #include "AuthManager.h"
-#include "DBManager.h"
-#include "CacheManager.h"
+// #include "DBManager.h"
+// #include "CacheManager.h"
+#include "ThreadPool.h"
 #include "Logger.h"
 #include <iostream>
 #include <stdexcept>
 #include <thread>
 
-AuthManager::AuthManager() = default;
-
-AuthManager& AuthManager::instance()
+AuthManager::AuthManager(std::unique_ptr<IAuthRepository> repository,ThreadPool&sharedPool)
+:_repository(std::move(repository)),
+_sharedPool(sharedPool)
 {
-    static AuthManager instance;
-    return instance;
+    LOG_INFO("AuthManager initialized with IAuthRepository dependency.");
 }
 
 bool AuthManager::parseBody(const std::string& body,
@@ -82,7 +82,7 @@ bool AuthManager::parseBody(const std::string& body,
 void AuthManager::performCheckAsync(const HookParams& params,
                                     AuthCallback callback)
 {
-    ThreadPool& shared_pool = DBManager::instance().getThreadPool();
+    ThreadPool& shared_pool = _sharedPool;
 
     auto start_auth_check = [this,params,callback]()
     {
@@ -92,55 +92,25 @@ void AuthManager::performCheckAsync(const HookParams& params,
 
         try
         {
-            std::future<int> cache_future = CacheManager::instance().getAuthResult(streamName, clientId);
-            int cache_result = cache_future.get();
+            LOG_INFO("AuthManager: Submitting request to Repository for stream: " + streamName);
 
-            if (cache_result == CACHE_HIT_SUCCESS)
-            {
-                LOG_INFO("AuthManager: Cache HIT (SUCCESS) for stream: "+streamName);
-                callback(AuthError::SUCCESS);
-                return;
-            }
+            auto authData=_repository->getAuthData(streamName,clientId,authToken);
 
-            if (cache_result == CACHE_HIT_FAILURE)
-            {
-                LOG_INFO("AuthManager: Cache HIT (FAILURE) for stream: "+streamName);
-                callback(AuthError::CACHE_AUTH_FAIL);
-                return;
-            }
+            int final_result_code=AuthError::AUTH_DENIED;
 
-            if (cache_result == CACHE_MISS)
-            {
-                LOG_INFO("AuthManager: Cache MISS. Falling back to DB for stream: " + streamName);
-            }
-            else
-            {
-                LOG_WARN("AuthManager Warning: Cache service error. Falling back to DB.");
-            }
-
-            std::future<int> db_future = DBManager::instance().asyncCheckStream(streamName, clientId, authToken);
-            int db_result = db_future.get();
-
-            int final_result_code = AuthError::DB_AUTH_FAIL;;
-
-            if (db_result == 1)
-            {
-                final_result_code = AuthError::SUCCESS;
-            }
-            else if (db_result == 0)
-            {
-                final_result_code = AuthError::DB_AUTH_FAIL;
-            }
-            else if (db_result == -1 || db_result == -2)
-            {
-                LOG_ERROR("AuthManager Error: DB internal error (Code: "+std::to_string(db_result)+"). Fail Closed.");
-                callback(AuthError::DB_ERROR);
-                return;
-            }
-
-            int cache_set_value = (final_result_code == AuthError::SUCCESS) ? CACHE_HIT_SUCCESS : CACHE_HIT_FAILURE;
-            CacheManager::instance().setAuthResult(streamName, clientId, cache_set_value);
-
+           if (authData.has_value()&&authData.value().isAuthorized)
+           {
+               LOG_INFO("AuthManager: Authorization SUCCESS via Repository for stream: " + streamName);
+               final_result_code=AuthError::SUCCESS;
+           }else if (authData.has_value()&&!authData.value().isAuthorized)
+           {
+               LOG_INFO("AuthManager: Data found but Authorization FAILED for stream: " + streamName);
+               final_result_code=AuthError::AUTH_DENIED;
+           }else
+           {
+               LOG_WARN("AuthManager: Repository returned nullopt (Not Found or Fault). Authorization Denied.");
+               final_result_code=AuthError::AUTH_DENIED;
+           }
             callback(final_result_code);
         }
         catch (const std::exception& e)
@@ -149,6 +119,5 @@ void AuthManager::performCheckAsync(const HookParams& params,
             callback(AuthError::RUNTIME_ERROR);
         }
     };
-
     shared_pool.submit(start_auth_check);
 }

@@ -7,6 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <chrono>
+#include <nlohmann/json.hpp>
 
 ThreadPool::ThreadPool(size_t threads) : stop(false)
 {
@@ -241,7 +242,9 @@ int DBManager::performSyncCheck(const std::string& streamName,
 
         std::unique_ptr<sql::PreparedStatement> pstmt(
             conn->prepareStatement(
-                "SELECT COUNT(id) FROM stream_auth WHERE stream_key=? AND client_id=? AND auth_token=? AND is_active=1"));
+                "SELECT COUNT(id) AS cnt FROM stream_auth "
+                "WHERE stream_key = ? AND client_id = ? AND auth_token = ? AND is_active = 1"
+                ));
 
         pstmt->setString(1, streamName);
         pstmt->setString(2, clientId);
@@ -311,5 +314,111 @@ bool DBManager::insertAuthForTest(const std::string& stream, const std::string& 
     {
         std::cerr << "Insert test auth failed: " << e.what() << std::endl;
         return false;
+    }
+}
+
+std::optional<StreamAuthData> DBManager::getAuthDataFromDB(const std::string& streamKey,
+                                                           const std::string& clientId,
+                                                           const std::string& authToken)
+{
+    std::unique_ptr<sql::Connection> conn(getConnection());
+    if (! conn)
+    {
+        LOG_ERROR("DBManager: Failed to get database connection.");
+        //return std::nullopt;
+        throw std::runtime_error("Failed to get database connection");
+    }
+
+    const std::string sql = R"(
+    SELECT
+        client_id,
+        is_active AS is_valid,
+        '' AS metadata_json
+    FROM stream_auth
+    WHERE stream_key = ?
+      AND client_id = ?
+      AND auth_token = ?
+      AND is_active = 1
+)";
+
+    try
+    {
+        std::unique_ptr<sql::PreparedStatement> pstmt(conn->prepareStatement(sql));
+
+        pstmt->setString(1, streamKey);
+        pstmt->setString(2, clientId);
+        pstmt->setString(3, authToken);
+
+        std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+
+        if (! res->next())
+        {
+            LOG_INFO("DBManager: Auth data not found for stream " + streamKey);
+            return std::nullopt;
+        }
+
+        StreamAuthData data;
+
+        data.streamKey = streamKey;
+        data.authToken = authToken;
+
+        data.clientId = res->getString("client_id");
+        data.isAuthorized = res->getBoolean("is_valid");
+
+        data.metadata.clear();
+        std::string metadateStr;
+        if (! res->isNull("metadata_json"))
+        {
+             metadateStr = res->getString("metadata_json");
+
+            try
+            {
+                nlohmann::json j = nlohmann::json::parse(metadateStr);
+                if (j.is_object())
+                {
+                    for (auto& [k,v] : j.items())
+                    {
+                        if (v.is_string())
+                        {
+                            data.metadata[k] = v.get<std::string>();
+                        }
+                    }
+                }
+            }
+            catch (...)
+            {
+            }
+        }
+        else
+        {
+            metadateStr = "{}";
+        }
+
+        if (res->isNull("metadata_json"))
+        {
+            data.metadata = {};
+        }
+        else
+        {
+            std::string metadataJson = res->getString("metadata_json").c_str();
+        }
+
+        if (data.clientId != clientId)
+        {
+            LOG_WARN("DBManager: Client ID mismatch for stream "+streamKey+ ". Authorization FAILED.");
+            data.isAuthorized = false;
+        }
+
+        return data;
+    }
+    catch (sql::SQLException& e)
+    {
+        LOG_ERROR("DBManager SQL Exception: " +std::string(e.what())+" (Code: " +std::to_string(e.getErrorCode())+ ")");
+        throw;
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR("DBManager General Exception: "+std::string(e.what()));
+        throw;
     }
 }
