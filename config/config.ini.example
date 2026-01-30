@@ -1,0 +1,32 @@
+# StreamGate Configuration File
+# 配置文件说明
+
+# ============================================
+# Redis Configuration
+# ============================================
+# 注意：使用6380端口避免与系统默认Redis(6379)冲突
+# 如果你的系统没有其他Redis服务，可以改为6379
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6380
+REDIS_DB=0
+
+# ============================================
+# MySQL / MariaDB Configuration
+# ============================================
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=root
+DB_PASS=your_password_here
+DB_NAME=streamgate_db
+DB_POOL_SIZE=8
+
+# ============================================
+# Cache Settings
+# ============================================
+REDIS_IO_THREADS=2
+CACHE_TTL_SECONDS=300
+
+# ============================================
+# HookServer Settings
+# ============================================
+SERVER_PORT=9000

@@ -4,7 +4,7 @@
 # Boost（仅使用 json 组件）
 find_package(Boost 1.89 REQUIRED COMPONENTS json)
 
-# pkg-config（用于查找 cpp_redis）
+# pkg-config（用于查找 hiredis）
 find_package(PkgConfig REQUIRED)
 
 # Google Test（单元测试）
@@ -13,8 +13,19 @@ find_package(GTest REQUIRED)
 # nlohmann/json（现代 C++ JSON 库）
 find_package(nlohmann_json REQUIRED)
 
-# cpp_redis（通过 pkg-config 查找）
-pkg_check_modules(CPP_REDIS REQUIRED cpp_redis)
+# 1. 查找 hiredis (redis++ 的底层依赖)
+pkg_check_modules(HIREDIS REQUIRED hiredis)
+
+# 2. 查找 redis++ 库文件 (针对 Fedora /usr/local/lib64 路径优化)
+find_library(REDISPP_LIB redis++
+        HINTS /usr/local/lib64 /usr/lib64
+)
+
+if (NOT REDISPP_LIB)
+    message(FATAL_ERROR "libredis++.so not found! Please check your installation.")
+endif()
+
+message(STATUS "Found Redis++: ${REDISPP_LIB}")
 
 # ============================================================
 # MariaDB Connector/C++ 相关库
@@ -57,6 +68,14 @@ add_library(streamgate_core
         repository/HybridAuthRepository.cpp
         util/ThreadPool.cpp
         main/HookServer.cpp
+        util/StreamTaskSerializer.cpp
+        repository/RedisStreamStateManager.cpp
+        scheduler/StreamTaskScheduler.cpp
+        util/EnumToString.cpp
+        util/NodeConfig.cpp
+        util/ZlmHookCommon.cpp
+        main/HookController.cpp
+        util/HookUseCase.cpp
 )
 
 # core 库的头文件搜索路径
@@ -64,6 +83,7 @@ add_library(streamgate_core
 target_include_directories(streamgate_core PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/../include
         ${CPP_REDIS_INCLUDE_DIRS}
+        /usr/local/include
         /usr/include/mariadb
 )
 
@@ -87,9 +107,8 @@ target_link_libraries(streamgate_core PUBLIC
         ${MARIADB_CPP}
         ${MARIADB_CLIENT}
 
-        # Redis（cpp_redis + tacopie）
-        ${CPP_REDIS_LIBRARIES}
-        tacopie
+        ${REDISPP_LIB}
+        ${HIREDIS_LIBRARIES}
 
         # nlohmann/json
         nlohmann_json::nlohmann_json

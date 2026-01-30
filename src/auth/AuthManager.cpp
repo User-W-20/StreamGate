@@ -2,122 +2,140 @@
 // Created by X on 2025/11/16.
 //
 #include "AuthManager.h"
-// #include "DBManager.h"
-// #include "CacheManager.h"
 #include "ThreadPool.h"
 #include "Logger.h"
-#include <iostream>
 #include <stdexcept>
-#include <thread>
 
-AuthManager::AuthManager(std::unique_ptr<IAuthRepository> repository,ThreadPool&sharedPool)
-:_repository(std::move(repository)),
-_sharedPool(sharedPool)
+AuthManager::AuthManager(std::unique_ptr<IAuthRepository> repo, ThreadPool& pool, Config config)
+    : _repository(std::move(repo)), _pool(pool), _config(config)
 {
-    LOG_INFO("AuthManager initialized with IAuthRepository dependency.");
+    if (!_repository)
+    {
+        throw std::invalid_argument("AuthManager: 注入的 Repository 为空");
+    }
 }
 
-bool AuthManager::parseBody(const std::string& body,
-                            std::string& streamName,
-                            std::string& clientId,
-                            std::string& authToken)
+AuthManager::~AuthManager()
 {
-    if (body.empty())
+    _shutdown.store(true);
+    LOG_INFO("AuthManager: Shutdown complete.");
+}
+
+int AuthManager::performAuthLogic(const std::string& sk, const std::string& cid, const std::string& tk) const
+{
+    try
     {
-        LOG_ERROR("AuthManager: Request body is empty.");
-        return false;
+        auto authData = _repository->getAuthData(sk, cid, tk);
+
+        if (authData.has_value() && authData->isAuthorized)
+        {
+            return AuthError::SUCCESS;
+        }
+
+        LOG_INFO("AuthManager: 授权拒绝 (StreamKey: " + sk + ")");
+        return AuthError::AUTH_DENIED;
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR("AuthManager: Repository 异常: " + std::string(e.what()));
+        return AuthError::RUNTIME_ERROR;
+    }
+    catch (...)
+    {
+        LOG_ERROR("AuthManager: Repository 发生未知异常");
+        return AuthError::RUNTIME_ERROR;
+    }
+}
+
+bool AuthManager::checkAuth(const std::string& streamKey, const std::string& clientId, const std::string& token) const
+{
+    if (_shutdown.load())return false;
+
+    // 使用 shared_ptr 管理 promise 生命周期，防止同步侧超时退出后导致的内存非法访问
+    const auto promise = std::make_shared<std::promise<int>>();
+    auto future = promise->get_future();
+
+    // 提交任务到线程池
+    _pool.submit([this,streamKey,clientId,token,promise]()
+    {
+        if (_shutdown.load())return;
+
+        const int result = this->performAuthLogic(streamKey, clientId, token);
+
+        try
+        {
+            // [安全补丁]: 捕获可能的 std::future_error
+            // 当调用方因超时已经销毁了 future 或放弃等待时，这里会抛出异常
+            promise->set_value(result);
+        }
+        catch (...)
+        {
+            // 忽略异常：说明调用方已超时退出
+        }
+    });
+
+    // 等待结果，带超时控制
+    auto status = future.wait_for(_config.timeout);
+
+    if (status == std::future_status::timeout)
+    {
+        LOG_WARN("AuthManager: 鉴权超时 (StreamKey: " + streamKey+ ")");
+        return false; // 超时视作鉴权失败
     }
 
     try
     {
-        //解析JSON
-        boost::json::value jv = boost::json::parse(body);
-        boost::json::object const& obj = jv.as_object();
-
-        //提取字段
-        if (obj.contains("streamKey") && obj.at("streamKey").is_string())
-        {
-            streamName = boost::json::value_to<std::string>(obj.at("streamKey"));
-        }
-        else
-        {
-            LOG_ERROR("AuthManager: Missing or invalid 'streamKey' in JSON.");
-            return false;
-        }
-
-        if (obj.contains("clientId") && obj.at("clientId").is_string())
-        {
-            clientId = boost::json::value_to<std::string>(obj.at("clientId"));
-        }
-        else
-        {
-            LOG_ERROR("AuthManager: Missing or invalid 'clientId' in JSON.");
-            return false;
-        }
-
-        if (obj.contains("authToken") && obj.at("authToken").is_string())
-        {
-            authToken = boost::json::value_to<std::string>(obj.at("authToken"));
-        }
-        else
-        {
-            LOG_ERROR("AuthManager: Missing or invalid 'authToken' in JSON.");
-            return false;
-        }
-
-        return true;
-    }
-    catch (const boost::system::system_error& e)
-    {
-        LOG_ERROR("AuthManager: JSON parse error: " +std::string(e.what()));
-        return false;
+        return future.get() == AuthError::SUCCESS;
     }
     catch (const std::exception& e)
     {
-        LOG_ERROR("AuthManager: Unexpected error during JSON parsing: " +std::string(e.what()));
+        LOG_ERROR("AuthManager: 获取 future 结果异常: " + std::string(e.what()));
         return false;
     }
 }
 
-void AuthManager::performCheckAsync(const HookParams& params,
-                                    AuthCallback callback)
+void AuthManager::checkAuthAsync(const std::string& streamKey, const std::string& clientId, const std::string& token,
+                                 AuthCallback cb) const
 {
-    ThreadPool& shared_pool = _sharedPool;
+    if (_shutdown.load() || !cb)return;
 
-    auto start_auth_check = [this,params,callback]()
+    // 异步模式：直接投递任务，不阻塞当前线程
+    _pool.submit([this,streamKey,clientId,token,cb=std::move(cb)]()
     {
-        const std::string& streamName = params.streamKey;
-        const std::string& clientId = params.clientId;
-        const std::string& authToken = params.authToken;
+        if (_shutdown.load())return;
 
+        const int result = this->performAuthLogic(streamKey, clientId, token);
+
+        // 执行回调
         try
         {
-            LOG_INFO("AuthManager: Submitting request to Repository for stream: " + streamName);
-
-            auto authData=_repository->getAuthData(streamName,clientId,authToken);
-
-            int final_result_code=AuthError::AUTH_DENIED;
-
-           if (authData.has_value()&&authData.value().isAuthorized)
-           {
-               LOG_INFO("AuthManager: Authorization SUCCESS via Repository for stream: " + streamName);
-               final_result_code=AuthError::SUCCESS;
-           }else if (authData.has_value()&&!authData.value().isAuthorized)
-           {
-               LOG_INFO("AuthManager: Data found but Authorization FAILED for stream: " + streamName);
-               final_result_code=AuthError::AUTH_DENIED;
-           }else
-           {
-               LOG_WARN("AuthManager: Repository returned nullopt (Not Found or Fault). Authorization Denied.");
-               final_result_code=AuthError::AUTH_DENIED;
-           }
-            callback(final_result_code);
+            cb(result);
         }
         catch (const std::exception& e)
         {
-            LOG_FATAL("AuthManager FATAL Error in Shared Worker thread: "+std::string(e.what())+". Fail Closed.");
-            callback(AuthError::RUNTIME_ERROR);
+            LOG_ERROR("AuthManager: 异步回调执行异常: " + std::string(e.what()));
         }
-    };
-    shared_pool.submit(start_auth_check);
+    });
+}
+
+void AuthManager::checkAuthAsync(const AuthRequest& req, AuthCallback cb) const
+{
+    if (_shutdown.load() || !cb)return;
+
+    // 直接透传 req 成员给线程池
+    _pool.submit([this,req,cb=std::move(cb)]()
+    {
+        if (_shutdown.load())return;
+
+        const int result = this->performAuthLogic(req.streamKey, req.clientId, req.authToken);
+
+        try
+        {
+            cb(result);
+        }
+        catch (const std::exception& e)
+        {
+            LOG_ERROR("AuthManager: 异常: " + std::string(e.what()));
+        }
+    });
 }

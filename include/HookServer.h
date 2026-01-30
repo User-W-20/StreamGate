@@ -4,31 +4,29 @@
 
 #ifndef STREAMGATE_HOOKSERVER_CPP_H
 #define STREAMGATE_HOOKSERVER_CPP_H
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/version.hpp>
+#include <boost/asio.hpp>
+#include <boost/beast.hpp>
+#include <memory>
 #include <vector>
 #include <string>
-
-#include "AuthManager.h"
-#include "CacheManager.h"
-#include "DBManager.h"
-#include "ConfigLoader.h"
-
+#include <atomic>
+#include "HookController.h"
 
 namespace net = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = net::ip::tcp;
 
-//请求处理类
+/**
+ * @brief 处理 ZLMediaKit Webhook 的 HTTP 会话
+ */
 class HookSession : public std::enable_shared_from_this<HookSession>
 {
 public:
-    explicit HookSession(tcp::socket socket, AuthManager& authManager);
+    explicit HookSession(tcp::socket socket, HookController& controller);
+
+    HookSession(const HookSession&) = delete;
+    HookSession& operator=(const HookSession&) = delete;
 
     void start();
 
@@ -36,69 +34,76 @@ private:
     //异步读取
     void do_read();
 
-    void on_read(beast::error_code ec, std::size_t bytes_transferred);
+    void do_shutdown();
+
+    void on_read(const beast::error_code& ec, std::size_t bytes_transferred);
 
     //处理请求，生成响应
     void handle_request();
 
     //异步写
-    void do_write(http::message_generator&& msg);
-
-    void on_write(bool keep_alive, beast::error_code ec, std::size_t bytes_transferred);
-    tcp::socket socket_;
-    net::strand<net::any_io_executor> strand_;
-
-    beast::flat_buffer buffer_;                //存储异步读取数据
-    http::request<http::string_body> request_; //存储解析后的http请求
-
     void send_response(int http_status, int business_code, const std::string& message);
+    void on_write(bool keep_alive, const beast::error_code& ec, std::size_t bytes_transferred);
 
-    AuthManager& _authManager;
+    tcp::socket _socket;
+    net::strand<net::any_io_executor> _strand;
+    beast::flat_buffer _buffer; //存储异步读取数据
+    http::request<http::string_body> _request; //存储解析后的http请求
+    http::response<http::string_body> _response; // 成员化复用
+
+    HookController& _controller;
+    std::atomic<bool> _responded{false};
 };
 
-//服务器监听类
-class StreamGateListener : public std::enable_shared_from_this<StreamGateListener>
+/**
+ * @brief 监听器：负责接受 TCP 连接
+ */
+class HookListener : public std::enable_shared_from_this<HookListener>
 {
 public:
-    StreamGateListener(
+    HookListener(
         net::io_context& ioc,
         const tcp::endpoint& endpoint,
-        AuthManager& authManager
-        );
+        HookController& controller
+    );
 
-    void run();
-
+    void start();
     void stop();
 
 private:
     void do_accept();
 
-    net::io_context& ioc_;
-    tcp::acceptor acceptor_;
-    AuthManager& _authManager;
+    net::io_context& _ioc;
+    tcp::acceptor _acceptor;
+    HookController& _controller;
 };
 
-//服务器应用入口类
-class StreamGateServer
+/**
+ * @brief Hook 服务主类：管理线程池与生命周期
+ */
+class HookServer
 {
 public:
-    void run();
+    struct Config
+    {
+        std::string address = "0.0.0.0";
+        int port = 8080;
+        int io_threads = 2;
+    };
 
-    StreamGateServer(const std::string& address, int port, int io_threads, AuthManager& authManager);
+    HookServer(Config config, HookController& controller);
+    ~HookServer();
 
-    ~StreamGateServer();
-
+    bool start();
     void stop();
 
-    void start_service(int io_threads);
-
 private:
-    std::vector<std::thread> io_threads_pool_;
-
-    std::optional<net::executor_work_guard<net::io_context::executor_type>> work_guard_;
-
-    net::io_context ioc_;
-
-    std::shared_ptr<StreamGateListener> listener_;
+    Config _config;
+    HookController& _controller;
+    net::io_context _ioc;
+    std::optional<net::executor_work_guard<net::io_context::executor_type>> _work_guard;
+    std::shared_ptr<HookListener> _listener;
+    std::vector<std::thread> _worker_threads;
+    std::atomic<bool> _running{false};
 };
 #endif //STREAMGATE_HOOKSERVER_CPP_H

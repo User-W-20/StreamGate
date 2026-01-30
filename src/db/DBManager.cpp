@@ -4,421 +4,272 @@
 #include "DBManager.h"
 #include "ConfigLoader.h"
 #include "Logger.h"
-#include <iostream>
 #include <stdexcept>
 #include <chrono>
 #include <nlohmann/json.hpp>
+#include <utility>
 
-ThreadPool::ThreadPool(size_t threads) : stop(false)
+//DBManager 实现
+DBManager::DBManager(Config config) : _config(std::move(config))
 {
-    if (threads == 0)
-        throw std::invalid_argument("Thread count must be greater than zero.");
-
-    for (size_t i = 0; i < threads; ++i)
+    if (_config.minSize < 0 || _config.maxSize < _config.minSize)
     {
-        workers.emplace_back(
-            [this]
-            {
-                for (;;)
-                {
-                    std::function<void()> task;
-
-                    {
-                        std::unique_lock<std::mutex> lock(this->queue_mutex);
-                        this->condition.wait(lock,
-                                             [this]
-                                             {
-                                                 return this->stop || ! this->tasks.empty();
-                                             }
-                            );
-
-                        if (this->stop && this->tasks.empty())
-                        {
-                            return;
-                        }
-                        task = std::move(this->tasks.front());
-                        this->tasks.pop();
-                    }
-                    task();
-                }
-            }
-            );
-    }
-}
-
-void ThreadPool::stop_and_wait()
-{
-    {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-        stop = true;
+        throw std::invalid_argument("DBManager: Invalid pool size configuration.");
     }
 
-    condition.notify_all();
+    try
+    {
+        _driver = sql::mariadb::get_driver_instance();
+    }
+    catch (sql::SQLException& e)
+    {
+        throw std::runtime_error("DBManager: Failed to get MariaDB driver: " + std::string(e.what()));
+    }
 
-    for (std::thread& worker : workers)
-        if (worker.joinable())
-            worker.join();
-}
-
-
-ThreadPool::~ThreadPool()
-{
-    stop_and_wait();
-}
-
-DBManager::DBManager() : _dirver(sql::mariadb::get_driver_instance()),
-                         _threadPool(
-                             std::make_unique<ThreadPool>(ConfigLoader::instance().getInt("SERVER_MAX_THREADS", 4)))
-{
+    //预填充最小连接数
+    std::lock_guard<std::mutex> lock(_mutex);
+    for (int i = 0; i < _config.minSize; ++i)
+    {
+        if (auto conn = createConnection())
+        {
+            _pool.push(std::move(conn));
+            ++_currentSize;
+        }
+    }
 }
 
 DBManager::~DBManager()
 {
-    if (_threadPool)
-    {
-        LOG_INFO("DBManager: Starting graceful ThreadPool shutdown...");
-
-        _threadPool->stop_and_wait();
-
-        LOG_INFO("DBManager: ThreadPool successfully stopped and joined.");
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(_connectionMutex);
-
-        LOG_INFO("DBManager: Closing all database connections in the pool...");
-
-        while (! _connectionPool.empty())
-        {
-            std::unique_ptr<sql::Connection> conn = std::move(_connectionPool.front());
-            _connectionPool.pop();
-
-            if (conn)
-            {
-                try
-                {
-                    conn->close();
-                }
-                catch (const sql::SQLException& e)
-                {
-                    LOG_WARN("DBManager: Error closing DB connection: " +std::string(e.what()));
-                }
-            }
-        }
-    }
-
-    LOG_INFO("DBManager: All MariaDB connections closed.");
+    shutdown();
 }
 
-
-DBManager& DBManager::instance()
+void DBManager::shutdown()
 {
-    static DBManager instance;
-    return instance;
-}
-
-std::unique_ptr<sql::Connection> DBManager::getConnection()
-{
-    std::unique_lock<std::mutex> lock(_connectionMutex);
-
-    while (! _connectionPool.empty())
     {
-        std::unique_ptr<sql::Connection> conn = std::move(_connectionPool.front());
-        _connectionPool.pop();
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_shutdown.exchange(true, std::memory_order_acq_rel))
+        {
+            return;
+        }
 
-        try
-        {
-            // 活性检查：尝试执行一个简单的查询
-            std::unique_ptr<sql::Statement> stmt(conn->createStatement());
-            stmt->execute("SELECT 1");
+        LOG_INFO("DBManager: Shutting down connection pool...");
 
-            // 检查成功，返回连接
-            return conn;
-        }
-        catch (const sql::SQLException& e)
+        //清空池子里的所有闲置连接
+        size_t idleCount = _pool.size();
+        while (!_pool.empty())
         {
-            // 捕获 SQL 异常，说明连接失效。丢弃它，继续检查下一个。
-            LOG_ERROR("DBManager getConnection SQL Error (Stale): "+std::string(e.what())+". Dropping connection.");
-            continue;
+            _pool.pop();
         }
-        catch (const std::exception& e)
-        {
-            LOG_ERROR("DBManager getConnection General Error: "+std::string(e.what())+ ". Dropping connection.");
-            continue;
-        }
-        catch (...)
-        {
-            LOG_ERROR("DBManager getConnection Unknown Error. Dropping connection.");
-            continue;
-        }
+
+        //更新计数（只减去池子里的，借出去的由 releaseConnection 处理）
+        _currentSize.fetch_sub(static_cast<int>(idleCount), std::memory_order_release);
     }
 
-    return nullptr; // 连接池耗尽
+    //唤醒所有正在 CV 上等待连接的业务线程
+    // 那些线程醒来后检查 _shutdown 为 true，会立即抛出异常或返回空
+    _cv.notify_all();
 }
 
-void DBManager::releaseConnection(std::unique_ptr<sql::Connection> conn)
+std::unique_ptr<sql::Connection> DBManager::createConnection() const
 {
-    if (! conn)
-        return;
-
     try
     {
-        std::unique_ptr<sql::Statement> stmt(conn->createStatement());
-        stmt->execute("SELECT 1");
+        auto* raw_conn = _driver->connect(_config.url, _config.user, _config.password);
+
+        if (!raw_conn)
+        {
+            LOG_WARN("DBManager: Driver returned null connection for URL: " + _config.url);
+            return nullptr;
+        }
+
+        LOG_DEBUG("DBManager: Successfully created new connection to " + _config.url);
+        return std::unique_ptr<sql::Connection>(raw_conn);
+    }
+    catch (sql::SQLException& e)
+    {
+        LOG_ERROR("DBManager: Connect failed (SQL). URL: " + _config.url +
+            ", User: " + _config.user + ", Error: " + std::string(e.what()));
+        return nullptr;
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR("DBManager: Connect failed (System). Error: " + std::string(e.what()));
+        return nullptr;
     }
     catch (...)
     {
-        return;
+        LOG_ERROR("DBManager: Connect failed with unknown fatal exception.");
+        return nullptr;
     }
-
-    std::lock_guard<std::mutex> lock(_connectionMutex);
-    _connectionPool.push(std::move(conn));
 }
 
-void DBManager::connect()
+bool DBManager::validateConnection(sql::Connection* conn)
 {
-    LOG_INFO("DBManager: Initializing MariaDB connection pool...");
-    std::vector<std::unique_ptr<sql::Connection>> temp_pool;
-    ConfigLoader& config = ConfigLoader::instance();
+    assert(conn!=nullptr);
+
     try
     {
-        const std::string host = ConfigLoader::instance().getString("DB_HOST");
-        const int port = ConfigLoader::instance().getInt("DB_PORT");
-        const std::string user = ConfigLoader::instance().getString("DB_USER");
-        const std::string pass = ConfigLoader::instance().getString("DB_PASS");
-        const std::string name = ConfigLoader::instance().getString("DB_NAME");
+        const std::unique_ptr<sql::Statement> stmt(conn->createStatement());
+        if (!stmt)return false;
+        //执行极简心跳查询
 
-        const size_t initial_pool_size = config.getInt("DB_POOL_SIZE", 5);
-
-        const std::string url = "jdbc:mariadb://" + host + ":" + std::to_string(port);
-
-        for (size_t i = 0; i < initial_pool_size; ++i)
-        {
-            std::unique_ptr<sql::Connection> conn(_dirver->connect(url, user, pass));
-            conn->setSchema(name);
-            temp_pool.push_back(std::move(conn));
-        }
-
-        {
-            std::unique_lock<std::mutex> lock(_connectionMutex);
-            for (auto& conn_ptr : temp_pool)
-            {
-                _connectionPool.push(std::move(conn_ptr));
-            }
-        }
-
-        LOG_INFO(
-            "DBManager: MariaDB connection pool initialized. (Host: "+host+ ", Pool Size: "+ std::to_string(
-                initial_pool_size)+")");
+        const std::unique_ptr<sql::ResultSet> res(stmt->executeQuery("SELECT 1"));
+        return res && res->next();
     }
-    catch (const sql::SQLException& e)
+    catch (sql::SQLException& e)
     {
-        LOG_FATAL("DBManager FATAL SQL ERROR during connection: "+std::string(e.what()));
-        throw;
+        // 针对数据库驱动异常的特化处理
+        LOG_DEBUG("DBManager: Connection validation failed (SQL Error: " +
+            std::to_string(e.getErrorCode()) + ") " + e.what());
+        return false;
     }
     catch (const std::exception& e)
     {
-        LOG_FATAL("DBManager FATAL ERROR: " +std::string(e.what()));
-        throw;
+        // 捕获其他可能的系统异常或内存异常
+        LOG_DEBUG("DBManager: Connection validation failed (System Error): " + std::string(e.what()));
+        return false;
     }
-}
-
-int DBManager::performSyncCheck(const std::string& streamName,
-                                const std::string& clientId,
-                                const std::string& authToken)
-{
-    std::unique_ptr<sql::Connection> conn = nullptr;
-    int result = 0; // 0 表示业务认证失败
-
-    try
+    catch (...)
     {
-        conn = getConnection();
-
-        if (! conn)
-        {
-            LOG_ERROR("DBManager Error: Failed to get connection from pool (exhausted).");
-            return -1; // DB 错误
-        }
-
-        std::unique_ptr<sql::PreparedStatement> pstmt(
-            conn->prepareStatement(
-                "SELECT COUNT(id) AS cnt FROM stream_auth "
-                "WHERE stream_key = ? AND client_id = ? AND auth_token = ? AND is_active = 1"
-                ));
-
-        pstmt->setString(1, streamName);
-        pstmt->setString(2, clientId);
-        pstmt->setString(3, authToken);
-
-        std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
-
-        if (res->next())
-        {
-            int count = res->getInt(1);
-            if (count > 0)
-            {
-                result = 1; // 业务认证成功
-            }
-        }
-        std::string result_str = result == 1 ? "Success" : "Failed";
-        LOG_INFO("DBManager: Sync check for stream " +streamName+ " completed. Result: "+result_str);
-        releaseConnection(std::move(conn));
-    }
-    catch (const sql::SQLException& e)
-    {
-        LOG_ERROR(
-            "DBManager SQL Query Error: "+std::string(e.what())+" (Stream: "+streamName+ "). Dropping connection.");
-        result = -1; // DB 错误
-    }
-    catch (const std::exception& e)
-    {
-        LOG_ERROR("DBManager General Error: " +std::string(e.what())+". Dropping connection.");
-        result = -2; // 系统错误
-    }
-
-    return result;
-}
-
-std::future<int> DBManager::asyncCheckStream(const std::string& streamName,
-                                             const std::string& clientId,
-                                             const std::string& authToken)
-{
-    return _threadPool->submit(
-        &DBManager::performSyncCheck,
-        this,
-        streamName,
-        clientId,
-        authToken
-        );
-}
-
-bool DBManager::insertAuthForTest(const std::string& stream, const std::string& client, const std::string& token)
-{
-    try
-    {
-        auto conn = getConnection();
-        std::unique_ptr<sql::PreparedStatement> stmt(
-            conn->prepareStatement(
-                "REPLACE INTO stream_auth(stream_key, client_id, auth_token) VALUES(?, ?, ?)"
-                ));
-
-        stmt->setString(1, stream);
-        stmt->setString(2, client);
-        stmt->setString(3, token);
-        stmt->executeUpdate();
-        conn->commit();
-        releaseConnection(std::move(conn));
-        return true;
-    }
-    catch (const sql::SQLException& e)
-    {
-        std::cerr << "Insert test auth failed: " << e.what() << std::endl;
+        LOG_ERROR("DBManager: Connection validation failed with an unknown fatal error.");
         return false;
     }
 }
 
-std::optional<StreamAuthData> DBManager::getAuthDataFromDB(const std::string& streamKey,
-                                                           const std::string& clientId,
-                                                           const std::string& authToken)
+std::unique_ptr<sql::Connection> DBManager::acquireConnection()
 {
-    std::unique_ptr<sql::Connection> conn(getConnection());
-    if (! conn)
+    // 关机预检
+    if (_shutdown.load(std::memory_order_acquire))return nullptr;
+
+    std::unique_lock<std::mutex> lock(_mutex);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(_config.checkoutTimeoutMs);
+
+    while (true)
     {
-        LOG_ERROR("DBManager: Failed to get database connection.");
-        //return std::nullopt;
-        throw std::runtime_error("Failed to get database connection");
-    }
+        // 拿锁后二次检查
+        if (_shutdown.load(std::memory_order_acquire))return nullptr;
 
-    const std::string sql = R"(
-    SELECT
-        client_id,
-        is_active AS is_valid,
-        '' AS metadata_json
-    FROM stream_auth
-    WHERE stream_key = ?
-      AND client_id = ?
-      AND auth_token = ?
-      AND is_active = 1
-)";
-
-    try
-    {
-        std::unique_ptr<sql::PreparedStatement> pstmt(conn->prepareStatement(sql));
-
-        pstmt->setString(1, streamKey);
-        pstmt->setString(2, clientId);
-        pstmt->setString(3, authToken);
-
-        std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
-
-        if (! res->next())
+        // 策略 A: 从池中获取
+        if (!_pool.empty())
         {
-            LOG_INFO("DBManager: Auth data not found for stream " + streamKey);
-            return std::nullopt;
+            auto conn = std::move(_pool.front());
+            _pool.pop();
+
+            lock.unlock(); // 校验可能耗时，释放锁
+            if (validateConnection(conn.get()))
+            {
+                return conn;
+            }
+
+            // 连接失效：减计数并继续寻找下一个
+            _currentSize.fetch_sub(1, std::memory_order_release);
+            lock.lock();
+            continue;
         }
 
-        StreamAuthData data;
-
-        data.streamKey = streamKey;
-        data.authToken = authToken;
-
-        data.clientId = res->getString("client_id");
-        data.isAuthorized = res->getBoolean("is_valid");
-
-        data.metadata.clear();
-        std::string metadateStr;
-        if (! res->isNull("metadata_json"))
+        // 策略 B: 尝试扩容
+        int current = _currentSize.load(std::memory_order_acquire);
+        if (current < _config.maxSize)
         {
-             metadateStr = res->getString("metadata_json");
-
-            try
+            // 尝试预占位
+            if (_currentSize.compare_exchange_strong(current, current + 1))
             {
-                nlohmann::json j = nlohmann::json::parse(metadateStr);
-                if (j.is_object())
+                lock.unlock();
+                if (auto conn = createConnection())
                 {
-                    for (auto& [k,v] : j.items())
-                    {
-                        if (v.is_string())
-                        {
-                            data.metadata[k] = v.get<std::string>();
-                        }
-                    }
+                    return conn;
                 }
+
+                // 创建失败：回滚预占位
+                _currentSize.fetch_sub(1, std::memory_order_release);
+                lock.lock();
             }
-            catch (...)
-            {
-            }
+        }
+
+        // 策略 C: 阻塞等待
+        // 如果无法扩容也拿不到池子里的，就只能等别人归还
+        if (_cv.wait_until(lock, deadline, [this]()
+        {
+            return !_pool.empty() || _shutdown.load(std::memory_order_acquire);
+        }))
+        {
+            // 唤醒后继续循环
+            continue;
         }
         else
         {
-            metadateStr = "{}";
+            // 超时退出
+            return nullptr;
         }
-
-        if (res->isNull("metadata_json"))
-        {
-            data.metadata = {};
-        }
-        else
-        {
-            std::string metadataJson = res->getString("metadata_json").c_str();
-        }
-
-        if (data.clientId != clientId)
-        {
-            LOG_WARN("DBManager: Client ID mismatch for stream "+streamKey+ ". Authorization FAILED.");
-            data.isAuthorized = false;
-        }
-
-        return data;
     }
-    catch (sql::SQLException& e)
+}
+
+void DBManager::releaseConnection(std::unique_ptr<sql::Connection> conn)
+{
+    if (!conn)return;
+
+    // 归还前探活
+    if (conn->isClosed() || !validateConnection(conn.get()))
     {
-        LOG_ERROR("DBManager SQL Exception: " +std::string(e.what())+" (Code: " +std::to_string(e.getErrorCode())+ ")");
-        throw;
+        _currentSize.fetch_sub(1, std::memory_order_release);
+        return;
     }
-    catch (const std::exception& e)
+
+    //状态检查与入池
     {
-        LOG_ERROR("DBManager General Exception: "+std::string(e.what()));
-        throw;
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_shutdown.load(std::memory_order_acquire))
+        {
+            _currentSize.fetch_sub(1, std::memory_order_release);
+            return;
+        }
+        _pool.push(std::move(conn));
     }
+
+    _cv.notify_one();
+}
+
+bool DBManager::isConnected() const
+{
+    //如果正在关闭，直接判定为不健康
+    if (_shutdown.load(std::memory_order_relaxed))
+    {
+        return false;
+    }
+
+    //只要池内维持有存量连接，即视为逻辑连通
+    // 具体的连接有效性由 ConnectionGuard 在 acquire 时处理
+    return _currentSize.load(std::memory_order_relaxed) > 0;
+}
+
+//ConnectionGuard 实现
+ConnectionGuard::ConnectionGuard(DBManager& manager)
+    : _manager(&manager), _conn(manager.acquireConnection())
+{
+}
+
+ConnectionGuard::~ConnectionGuard()
+{
+    if (_conn && _manager)
+    {
+        _manager->releaseConnection(std::move(_conn));
+    }
+}
+
+ConnectionGuard::ConnectionGuard(ConnectionGuard&& other) noexcept
+    : _manager(other._manager), _conn(std::move(other._conn))
+{
+    other._manager = nullptr;
+}
+
+ConnectionGuard& ConnectionGuard::operator=(ConnectionGuard&& other) noexcept
+{
+    if (this != &other)
+    {
+        _manager = other._manager;
+        _conn = std::move(other._conn);
+        other._manager = nullptr;
+    }
+
+    return *this;
 }

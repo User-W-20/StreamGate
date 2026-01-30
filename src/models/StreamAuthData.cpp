@@ -10,15 +10,7 @@ std::string StreamAuthData::serialize() const
 {
     try
     {
-        nlohmann::json j;
-
-        j["streamKey"] = streamKey;
-        j["clientId"] = clientId;
-        j["authToken"] = authToken;
-        j["isAuthorized"] = isAuthorized;
-        j["metadata"] = metadata;
-
-        return j.dump();
+        return nlohmann::json(*this).dump();
     }
     catch (const std::exception& e)
     {
@@ -36,18 +28,8 @@ std::optional<StreamAuthData> StreamAuthData::deserialize(const std::string& dat
 
     try
     {
-        auto j = nlohmann::json(data);
-        StreamAuthData result;
-
-        result.streamKey = j.value("streamKey", "");
-        result.clientId = j.value("clientId", "");
-        result.authToken = j.value("authToken", "");
-        result.isAuthorized = j.value("isAuthorized", false);
-
-        if (j.contains("metadata") && j["metadata"].is_object())
-        {
-            result.metadata = j["metadata"].get<std::map<std::string, std::string>>();
-        }
+        auto j = nlohmann::json::parse(data);
+        auto result = j.get<StreamAuthData>();
 
         if (result.streamKey.empty())
         {
@@ -62,4 +44,3 @@ std::optional<StreamAuthData> StreamAuthData::deserialize(const std::string& dat
         return std::nullopt;
     }
 }
-

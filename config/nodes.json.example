@@ -1,0 +1,24 @@
+{
+  "_comment": "StreamGate Node Configuration - Localhost Example",
+  "rtmp_srt": [
+    {
+      "host": "127.0.0.1",
+      "port": 1935,
+      "comment": "本地RTMP服务 (ZLMediaKit默认端口)"
+    }
+  ],
+  "http_hls": [
+    {
+      "host": "127.0.0.1",
+      "port": 8080,
+      "comment": "本地HTTP-FLV/HLS服务"
+    }
+  ],
+  "webrtc": [
+    {
+      "host": "127.0.0.1",
+      "port": 8443,
+      "comment": "本地WebRTC服务"
+    }
+  ]
+}
