@@ -19,6 +19,19 @@
 #include "HookServer.h"
 #include "HybridAuthRepository.h"
 #include "RedisStreamStateManager.h"
+#include "MetricsCollector.h"
+#include "ServerMetricsProvider.h"
+#include "SchedulerMetricsProvider.h"
+#include "CacheMetricsProvider.h"
+#include "DatabaseMetricsProvider.h"
+#include "MetricsRegistry.h"
+#include "HealthChecker.h"
+
+// 强制链接所有Provider
+extern "C" void ForceLink_ServerMetricsProvider();
+extern "C" void ForceLink_SchedulerMetricsProvider();
+extern "C" void ForceLink_CacheMetricsProvider();
+extern "C" void ForceLink_DatabaseMetricsProvider();
 
 // 全局退出信号上下文
 struct ShutdownContext
@@ -38,6 +51,11 @@ void signalHandler(int sig)
 
 int main(int argc, char* argv[])
 {
+    ForceLink_ServerMetricsProvider();
+    ForceLink_SchedulerMetricsProvider();
+    ForceLink_CacheMetricsProvider();
+    ForceLink_DatabaseMetricsProvider();
+
     //加载配置
     const std::string ini_path = "config/config.ini";
     const std::string env_path = ".env";
@@ -178,6 +196,64 @@ int main(int argc, char* argv[])
         LOG_INFO("StreamTaskScheduler started");
 
         // ================================================================
+        // Monitoring System
+        // ================================================================
+        LOG_INFO("=== Initializing Monitoring System ===");
+
+        //从ELF段自动发现所有Provider
+        auto providers = MetricsRegistry::createAll();
+        LOG_INFO("Discovered " + std::to_string(providers.size()) + " monitoring providers");
+
+        // 设置依赖（延迟注入）
+        for (auto& provider : providers)
+        {
+            // SchedulerMetricsProvider需要scheduler
+            if (auto* sp = dynamic_cast<SchedulerMetricsProvider*>(provider.get()))
+            {
+                sp->setScheduler(scheduler.get());
+                LOG_INFO("  -> Injected scheduler into SchedulerMetricsProvider");
+            }
+            // CacheMetricsProvider需要cache
+            else if (auto* cp = dynamic_cast<CacheMetricsProvider*>(provider.get()))
+            {
+                cp->setCache(&CacheManager::instance());
+                LOG_INFO("  -> Injected cache into CacheMetricsProvider");
+            }
+            // DatabaseMetricsProvider需要db
+            else if (auto* dp = dynamic_cast<DatabaseMetricsProvider*>(provider.get()))
+            {
+                dp->setDB(db_manager.get());
+                LOG_INFO("  -> Injected db into DatabaseMetricsProvider");
+            }
+            // ServerMetricsProvider不需要依赖（使用Thread-Local）
+        }
+
+        //注册到全局MetricsCollector
+        auto& metricsCollector = MetricsCollector::instance();
+        for (auto& provider : providers)
+        {
+            metricsCollector.registerProvider(provider);
+        }
+        LOG_INFO("All providers registered to MetricsCollector");
+
+        //启动刷新线程
+        metricsCollector.start(
+            std::chrono::seconds(1),
+            [](const nlohmann::json& report)
+            {
+            }
+        );
+
+        // 创建健康检查器
+        auto healthChecker = std::make_shared<HealthChecker>(
+            &CacheManager::instance(),
+            db_manager.get(),
+            scheduler.get()
+        );
+
+        LOG_INFO("=== Monitoring System Ready ===");
+
+        // ================================================================
         //  Hook Processing Layers (Clean Architecture)
         // ================================================================
 
@@ -214,6 +290,10 @@ int main(int argc, char* argv[])
         // Graceful Shutdown
         // ================================================================
         LOG_INFO("=== Initiating Graceful Shutdown ===");
+
+        LOG_INFO("Stopping monitoring system...");
+        MetricsCollector::instance().stop();
+        LOG_INFO("Monitoring system stopped");
 
         // Stop in reverse order of initialization
         server->stop();

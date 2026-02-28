@@ -8,7 +8,6 @@
 #include "AuthManager.h"
 #include "StreamTask.h"
 #include "NodeConfig.h"
-#include <memory>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -58,6 +57,7 @@ public:
         uint64_t success_play;
         uint64_t auth_failures;
         uint64_t tasks_cleaned;
+        uint64_t last_update_ms;
     };
 
     // 统一回调类型

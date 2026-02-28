@@ -9,6 +9,8 @@
 #include <nlohmann/json.hpp>
 #include <unordered_set>
 
+#include "MetricsCollector.h"
+
 using json = nlohmann::json;
 
 namespace
@@ -110,10 +112,62 @@ void HookSession::handle_request()
 {
     std::string_view target{_request.target()};
 
+    auto path = target.substr(0, target.find('?'));
+
+    if (_request.method() == http::verb::get)
+    {
+        // /metrics 端点
+        if (path == "/metrics")
+        {
+            auto& collector = MetricsCollector::instance();
+            nlohmann::json j = collector.collectAll();
+
+            _response = {};
+            _response.version(_request.version());
+            _response.result(http::status::ok);
+            _response.set(http::field::content_type, "application/json");
+            _response.set(http::field::server, "StreamGate/1.0");
+            _response.keep_alive(_request.keep_alive());
+            _response.body() = j.dump(2);
+            _response.prepare_payload();
+
+            return http::async_write(_socket, _response,
+                                     net::bind_executor(
+                                         _strand,
+                                         [self=shared_from_this(),ka=_response.keep_alive()](auto ec, auto bytes)
+                                         {
+                                             self->on_write(ka, ec, bytes);
+                                         }));
+        }
+
+        // /health 端点
+        if (path == "/health")
+        {
+            nlohmann::json j{{"status", "healthy"}, {"timestamp", std::time(nullptr)}};
+
+            _response = {};
+            _response.version(_request.version());
+            _response.result(http::status::ok);
+            _response.set(http::field::content_type, "application/json");
+            _response.set(http::field::server, "StreamGate/1.0");
+            _response.keep_alive(_request.keep_alive());
+            _response.body() = j.dump(2);
+            _response.prepare_payload();
+
+            return http::async_write(_socket, _response,
+                                     net::bind_executor(
+                                         _strand,
+                                         [self=shared_from_this(),ka=_response.keep_alive()](auto ec, auto bytes)
+                                         {
+                                             self->on_write(ka, ec, bytes);
+                                         }));
+        }
+
+        return send_response(404, 999, "Not found");
+    }
+
     if (_request.method() != http::verb::post)
         return send_response(405, 999, "Method not allowed");
-
-    auto path = target.substr(0, target.find('?'));
 
     HookAction action = map_path_to_action(path);
 

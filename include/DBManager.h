@@ -16,6 +16,15 @@
 
 class DBManager;
 
+struct PoolStats
+{
+    bool is_ok = false;
+    int current_size = 0;
+    int active_count = 0;
+    int idle_count = 0;
+    int wait_count = 0;
+};
+
 /**
  * @brief RAII 辅助类：自动管理连接的借出与归还
  */
@@ -33,7 +42,7 @@ public:
 
     sql::Connection* operator->() const
     {
-       if (!_conn) throw std::runtime_error("DBManager: Accessing null connection via Guard");
+        if (!_conn) throw std::runtime_error("DBManager: Accessing null connection via Guard");
         return _conn.get();
     }
 
@@ -80,7 +89,8 @@ public:
     // 状态查询
     int getCurrentSize() const
     {
-        return _currentSize.load();
+        // return _currentSize.load();
+        return _total_conns.load(std::memory_order_acquire);
     }
 
     bool isShutdown() const
@@ -94,6 +104,56 @@ public:
      */
     bool isConnected() const;
 
+    /**
+     * @brief 获取连接池统计快照
+     */
+    PoolStats getPoolStats() const noexcept
+    {
+        PoolStats stats;
+        stats.is_ok = this->isConnected();
+
+        // 核心原子读取
+        const int total = _total_conns.load(std::memory_order_relaxed);
+        const int active = _active_conns.load(std::memory_order_relaxed);
+
+        stats.current_size = total;
+        stats.active_count = active;
+
+        // 计算得出 idle，即使发生瞬时漂移，也不会出现逻辑上的“幽灵连接”
+        stats.idle_count = (total > active) ? (total - active) : 0;
+        stats.wait_count = _wait_threads.load(std::memory_order_relaxed);
+
+        return stats;
+    }
+
+protected:
+    // 连接取出：只有 active 增加
+    void markConnectionAcquired() noexcept
+    {
+        _active_conns.fetch_add(1, std::memory_order_relaxed);
+        assert(_active_conns.load()<=_total_conns.load());
+    }
+
+    // 连接归还：只有 active 减少
+    void markConnectionReleased() noexcept
+    {
+        _active_conns.fetch_sub(1, std::memory_order_relaxed);
+        assert(_active_conns.load()>=0);
+    }
+
+    // 动态扩容：只有 total 增加
+    void markConnectionCreated() noexcept
+    {
+        _total_conns.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // 动态缩容/销毁：只有 total 减少
+    void markConnectionDestroyed() noexcept
+    {
+        _total_conns.fetch_sub(1, std::memory_order_relaxed);
+        assert(_total_conns.load()>=_active_conns.load());
+    }
+
 private:
     std::unique_ptr<sql::Connection> createConnection() const;
     static bool validateConnection(sql::Connection* conn);
@@ -105,7 +165,11 @@ private:
     mutable std::mutex _mutex;
     std::condition_variable _cv;
 
-    std::atomic<int> _currentSize{0};
+    // std::atomic<int> _currentSize{0};
     std::atomic<bool> _shutdown{false};
+
+    std::atomic<int> _total_conns{0};
+    std::atomic<int> _active_conns{0};
+    std::atomic<int> _wait_threads{0};
 };
 #endif //STREAMGATE_DBMANAGER_H

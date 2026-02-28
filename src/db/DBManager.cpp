@@ -12,11 +12,13 @@
 //DBManager 实现
 DBManager::DBManager(Config config) : _config(std::move(config))
 {
+    //基础配置校验
     if (_config.minSize < 0 || _config.maxSize < _config.minSize)
     {
-        throw std::invalid_argument("DBManager: Invalid pool size configuration.");
+        throw std::invalid_argument("DBManager: Invalid pool size configuration (minSize/maxSize).");
     }
 
+    //获取驱动实例 (MariaDB Connector/C++ 特有)
     try
     {
         _driver = sql::mariadb::get_driver_instance();
@@ -26,14 +28,26 @@ DBManager::DBManager(Config config) : _config(std::move(config))
         throw std::runtime_error("DBManager: Failed to get MariaDB driver: " + std::string(e.what()));
     }
 
-    //预填充最小连接数
+    //预填充最小连接数 (锁保护)
     std::lock_guard<std::mutex> lock(_mutex);
     for (int i = 0; i < _config.minSize; ++i)
     {
-        if (auto conn = createConnection())
+        try
         {
-            _pool.push(std::move(conn));
-            ++_currentSize;
+            if (auto conn = createConnection())
+            {
+                _pool.push(std::move(conn));
+                _total_conns.fetch_add(1, std::memory_order_acq_rel);
+                markConnectionCreated();
+            }
+            else
+            {
+                LOG_ERROR("DBManager: Initial connection creation failed at index " + std::to_string(i));
+            }
+        }
+        catch (const std::exception& e)
+        {
+            LOG_ERROR("DBManager: Exception during initial pre-fill: " + std::string(e.what()));
         }
     }
 }
@@ -47,26 +61,26 @@ void DBManager::shutdown()
 {
     {
         std::lock_guard<std::mutex> lock(_mutex);
+
+        //使用 exchange 保证只有第一个到达的线程执行销毁逻辑 (幂等性)
         if (_shutdown.exchange(true, std::memory_order_acq_rel))
         {
             return;
         }
 
-        LOG_INFO("DBManager: Shutting down connection pool...");
+        LOG_INFO("DBManager: Shutting down connection pool, cleaning up idle connections...");
 
         //清空池子里的所有闲置连接
-        size_t idleCount = _pool.size();
         while (!_pool.empty())
         {
             _pool.pop();
-        }
 
-        //更新计数（只减去池子里的，借出去的由 releaseConnection 处理）
-        _currentSize.fetch_sub(static_cast<int>(idleCount), std::memory_order_release);
+            _total_conns.fetch_sub(1, std::memory_order_acq_rel);
+            markConnectionDestroyed();
+        }
     }
 
-    //唤醒所有正在 CV 上等待连接的业务线程
-    // 那些线程醒来后检查 _shutdown 为 true，会立即抛出异常或返回空
+    //锁外通知：瞬间击穿所有正在 wait_until 的 acquire 线程
     _cv.notify_all();
 }
 
@@ -138,18 +152,19 @@ bool DBManager::validateConnection(sql::Connection* conn)
 
 std::unique_ptr<sql::Connection> DBManager::acquireConnection()
 {
-    // 关机预检
     if (_shutdown.load(std::memory_order_acquire))return nullptr;
 
     std::unique_lock<std::mutex> lock(_mutex);
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(_config.checkoutTimeoutMs);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(_config.checkoutTimeoutMs);
 
     while (true)
     {
-        // 拿锁后二次检查
         if (_shutdown.load(std::memory_order_acquire))return nullptr;
 
-        // 策略 A: 从池中获取
+        //调试期：验证不变量 (资源总数永远不应小于空闲池)
+        assert(_total_conns.load(std::memory_order_relaxed)>=static_cast<int>(_pool.size()));
+
+        // 策略 A: 池化获取 (受 Mutex 保护)
         if (!_pool.empty())
         {
             auto conn = std::move(_pool.front());
@@ -158,49 +173,65 @@ std::unique_ptr<sql::Connection> DBManager::acquireConnection()
             lock.unlock(); // 校验可能耗时，释放锁
             if (validateConnection(conn.get()))
             {
+                markConnectionAcquired();
                 return conn;
             }
 
-            // 连接失效：减计数并继续寻找下一个
-            _currentSize.fetch_sub(1, std::memory_order_release);
+            // 连接失效：相当于池子里少了一个连接
+            // 直接用 _total_conns 减 1 即可，无需再调 markConnectionDestroyed 包装函数
+            _total_conns.fetch_sub(1, std::memory_order_acq_rel);
             lock.lock();
             continue;
         }
 
-        // 策略 B: 尝试扩容
-        int current = _currentSize.load(std::memory_order_acquire);
+        // 策略 B: 尝试扩容 (高效 Weak CAS 循环)
+        int current = _total_conns.load(std::memory_order_relaxed);
         if (current < _config.maxSize)
         {
-            // 尝试预占位
-            if (_currentSize.compare_exchange_strong(current, current + 1))
+            if (_total_conns.compare_exchange_weak(
+                current, current + 1,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire))
             {
                 lock.unlock();
                 if (auto conn = createConnection())
                 {
+                    markConnectionAcquired();
                     return conn;
                 }
-
-                // 创建失败：回滚预占位
-                _currentSize.fetch_sub(1, std::memory_order_release);
+                _total_conns.fetch_sub(1, std::memory_order_acq_rel);
                 lock.lock();
+                goto POOL_RECHECK; // 创建失败回退到顶部重新判定
+            }
+            // CAS 失败时 current 会自动更新，while 循环会继续尝试直到满了或成功
+        }
+
+    POOL_RECHECK:
+        // 策略 C: 阻塞等待 (RAII + Notify-aware)
+        {
+            _wait_threads.fetch_add(1, std::memory_order_relaxed);
+            struct WaitGuard
+            {
+                std::atomic<int>& counter;
+
+                ~WaitGuard()
+                {
+                    counter.fetch_sub(1, std::memory_order_relaxed);
+                }
+            } guard{_wait_threads};
+
+            if (!_cv.wait_until(lock, deadline, [this]()
+            {
+                return !_pool.empty() || _shutdown.load(std::memory_order_acquire);
+            }))
+            {
+                LOG_WARN("DBManager: Acquire timeout");
+                return nullptr;
             }
         }
 
-        // 策略 C: 阻塞等待
-        // 如果无法扩容也拿不到池子里的，就只能等别人归还
-        if (_cv.wait_until(lock, deadline, [this]()
-        {
-            return !_pool.empty() || _shutdown.load(std::memory_order_acquire);
-        }))
-        {
-            // 唤醒后继续循环
-            continue;
-        }
-        else
-        {
-            // 超时退出
-            return nullptr;
-        }
+        if (_shutdown.load(std::memory_order_acquire)) return nullptr;
+        // 唤醒后续继续循环读取
     }
 }
 
@@ -208,38 +239,38 @@ void DBManager::releaseConnection(std::unique_ptr<sql::Connection> conn)
 {
     if (!conn)return;
 
-    // 归还前探活
-    if (conn->isClosed() || !validateConnection(conn.get()))
+    //只要归还，active 计数必然减少
+    markConnectionReleased();
+
+    //检查系统状态：如果已经关闭，直接销毁连接并减少 total 总数
+    if (_shutdown.load(std::memory_order_acquire))
     {
-        _currentSize.fetch_sub(1, std::memory_order_release);
+        _total_conns.fetch_sub(1, std::memory_order_acq_rel);
+        markConnectionDestroyed();
+
         return;
     }
 
-    //状态检查与入池
+    //正常归还：将连接推回池中 (受锁保护)
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        if (_shutdown.load(std::memory_order_acquire))
-        {
-            _currentSize.fetch_sub(1, std::memory_order_release);
-            return;
-        }
         _pool.push(std::move(conn));
     }
 
+    //锁外通知：避免唤醒后的线程立即产生锁竞争
     _cv.notify_one();
 }
 
 bool DBManager::isConnected() const
 {
-    //如果正在关闭，直接判定为不健康
-    if (_shutdown.load(std::memory_order_relaxed))
+    //如果正在关闭，直接判定为不可用
+    if (_shutdown.load(std::memory_order_acquire))
     {
         return false;
     }
 
-    //只要池内维持有存量连接，即视为逻辑连通
-    // 具体的连接有效性由 ConnectionGuard 在 acquire 时处理
-    return _currentSize.load(std::memory_order_relaxed) > 0;
+    //只要系统总连接数（含池内和借出的）大于 0，即视为逻辑连通
+    return _total_conns.load(std::memory_order_acquire) > 0;
 }
 
 //ConnectionGuard 实现

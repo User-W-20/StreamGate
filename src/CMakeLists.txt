@@ -76,6 +76,12 @@ add_library(streamgate_core
         util/ZlmHookCommon.cpp
         main/HookController.cpp
         util/HookUseCase.cpp
+        metrics/MetricsCollector.cpp
+        metrics/ServerMetricsProvider.cpp
+        metrics/SchedulerMetricsProvider.cpp
+        metrics/CacheMetricsProvider.cpp
+        metrics/DatabaseMetricsProvider.cpp
+        util/HealthChecker.cpp
 )
 
 # core 库的头文件搜索路径
